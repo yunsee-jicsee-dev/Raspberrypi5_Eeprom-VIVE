@@ -15,6 +15,7 @@
 | `scripts/try-intro.sh` | 설치하지 않고 화면에 나오는지만 확인 |
 | `scripts/make-plymouth-theme.py` | 인트로를 PNG 프레임으로 구워 plymouth 테마 생성 |
 | `scripts/install-plymouth-theme.sh` | 그 테마를 부팅 스플래시로 설치/복구 |
+| `scripts/preview-plymouth.sh` | 재부팅 없이 지금 바로 테마를 띄워 보기 |
 | `scripts/install-bootintro.sh` | 설치/제거 |
 | `scripts/diagnose.sh` | 화면에 안 나올 때 원인 좁히기 |
 
@@ -71,13 +72,16 @@ plymouth 가 initramfs 안에서 돈다. 테마만 바꾸고 initramfs 를 다�
 화면은 그대로인 증상). 설치 스크립트가 감지해서 `update-initramfs -u` 를
 돌린다.
 
-안 나올 때는 콘솔에서 미리보기 + 오류 확인:
+**재부팅 없이 확인**: 콘솔(`Ctrl+Alt+F2`)에서
 
 ```bash
-sudo plymouthd --no-daemon --debug --debug-file=/tmp/ply.log &
-sleep 1; sudo plymouth --show-splash; sleep 8; sudo plymouth quit
-grep -iE "error|script|rpi5" /tmp/ply.log | head -40
+sudo scripts/preview-plymouth.sh        # 8초 동안 띄워 본다
+sudo scripts/preview-plymouth.sh 15     # 15초
 ```
+
+지금 바로 화면에 띄워 보고, 끝나면 테마 스크립트의 오류를 찍어 준다.
+문법이 틀렸다면 몇 번째 줄인지 나온다. 무슨 일이 있어도 plymouth 를 화면에서
+치우고 끝낸다(trap).
 
 되돌리기:
 
