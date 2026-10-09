@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """vive-floppy-token 단위/통합 테스트 (이미지 파일 사용, 실물 플로피 불필요)."""
 
+import errno
 import importlib.util
 import os
 import shutil
@@ -241,6 +242,69 @@ class TestBackupRestore(TokenTestCase):
         res = run_tool("restore", bad, os.path.join(self.tmp, "out.img"))
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("크기", res.stderr)
+
+
+class TestWriteFailures(TokenTestCase):
+    """실물 플로피에서 가장 흔한 실패는 쓰기 금지 탭과 불량 섹터다.
+
+    그때 파이썬 traceback 이 뜨면 사용자는 무엇을 해야 할지 알 수 없다.
+    (실제로 /dev/sdb 포맷 중 EIO traceback 이 보고되어 추가한 테스트다.)
+    """
+
+    def test_write_error_explains_write_protect(self):
+        msg = vt.write_error(OSError(errno.EROFS, "ro"), "/dev/sdb", 0, 1)
+        self.assertIn("읽기 전용", msg)
+        self.assertIn("쓰기 금지 탭", msg)
+
+    def test_write_error_explains_io_error(self):
+        msg = vt.write_error(OSError(errno.EIO, "io"), "/dev/sdb", 49, 1)
+        self.assertIn("섹터 49", msg)
+        self.assertIn("dmesg", msg)          # 원인을 볼 방법을 알려 준다
+        self.assertIn("쓰기 금지 탭", msg)
+
+    def test_write_error_reports_sector_range(self):
+        msg = vt.write_error(OSError(errno.EIO, "io"), "/dev/sdb", 128, 64)
+        self.assertIn("섹터 128~191", msg)
+
+    def test_write_error_explains_permission(self):
+        msg = vt.write_error(OSError(errno.EACCES, "no"), "/dev/sdb", 0, 1)
+        self.assertIn("sudo", msg)
+
+    def test_write_error_explains_vanished_device(self):
+        msg = vt.write_error(OSError(errno.ENODEV, "gone"), "/dev/sdb", 0, 1)
+        self.assertIn("사라졌습니다", msg)
+
+    def test_unknown_errno_still_actionable(self):
+        msg = vt.write_error(OSError(errno.ESPIPE, "weird"), "/dev/sdb", 7, 1)
+        self.assertIn("쓰기 실패", msg)
+        self.assertIn("dmesg", msg)
+
+    def test_format_on_failing_device_has_no_traceback(self):
+        """/dev/full 은 쓰기에 ENOSPC 를 낸다. 실제 오류 경로를 끝까지 지난다."""
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full 이 없다")
+        res = run_tool("format", "/dev/full", "--iter", "10000", "--force")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertNotIn("Traceback", res.stderr)
+        self.assertIn("오류:", res.stderr)
+
+    def test_probe_runs_before_the_long_fill(self):
+        """쓰기가 안 되면 2880섹터를 채우기 전에 끝나야 한다."""
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full 이 없다")
+        res = run_tool("format", "/dev/full", "--iter", "10000", "--force")
+        self.assertNotIn("전체 2880 섹터를 난수로 채웁니다", res.stderr)
+
+    def test_verify_written_catches_bad_media(self):
+        """되읽기 검증이 조각 불일치를 잡는지 (헤더는 멀쩡한 채로)."""
+        self.format_token()
+        hdr = vt.Header.unpack(vt.read_sector(self.img, 0))
+        ikm = vt.collect_ikm(self.img, hdr)
+        _, mackey = vt.derive(ikm, hdr.salt, hdr.iter, "")
+        vt.verify_written(self.img, hdr, ikm, mackey)      # 정상이면 통과
+        with self.assertRaises(vt.TokenError) as cm:
+            vt.verify_written(self.img, hdr, b"\0" * len(ikm), mackey)
+        self.assertIn("부팅할 수 없습니다", str(cm.exception))
 
 
 class TestKdfVectors(unittest.TestCase):

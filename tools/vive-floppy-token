@@ -18,6 +18,7 @@ initramfs 단계의 키스크립트(POSIX sh + openssl)와 동일한 파생식�
 import argparse
 import binascii
 import datetime
+import errno
 import hashlib
 import hmac
 import os
@@ -90,20 +91,64 @@ def read_sector(path, lba, count=1):
     return data
 
 
+def write_error(exc, path, lba, count):
+    """쓰기 실패를 원인별로 설명한다.
+
+    플로피는 쓰기 금지 탭과 불량 섹터가 흔하다. errno 를 그대로 보여 주면
+    사용자가 무엇을 해야 하는지 알 수 없으므로 다음 행동까지 적어 준다.
+    """
+    where = ("섹터 %d" % lba) if count == 1 else \
+        ("섹터 %d~%d" % (lba, lba + count - 1))
+    common = (
+        "\n확인 순서:\n"
+        "  1) 디스켓의 쓰기 금지 탭이 닫혀 있는지 (구멍이 막혀 있어야 쓸 수 있다)\n"
+        "  2) cat /sys/block/%s/ro      -> 1 이면 읽기 전용이다\n"
+        "  3) sudo dmesg | tail -30     -> 'Write Protect is on' 또는\n"
+        "     'Medium Error' 같은 메시지가 원인을 바로 알려 준다\n"
+        "  4) sudo dd if=%s of=/dev/null bs=512 2>&1 | tail -3\n"
+        "     -> 표면 전체 읽기. 중간에 멈추면 그 디스켓은 버려야 한다\n"
+        % (os.path.basename(path), path))
+    if exc.errno == errno.EROFS:
+        return ("%s: %s 쓰기 거부 - 매체가 읽기 전용입니다.\n"
+                "디스켓의 쓰기 금지 탭을 닫고 다시 하세요." % (path, where))
+    if exc.errno == errno.EIO:
+        return ("%s: %s 쓰기 중 입출력 오류(EIO).\n"
+                "쓰기 금지 탭이 열려 있거나, 디스켓이 상했거나, 드라이브가 "
+                "읽지 못하는 상태입니다.%s" % (path, where, common))
+    if exc.errno in (errno.ENODEV, errno.ENXIO):
+        return ("%s: 장치가 사라졌습니다 (%s).\n"
+                "디스켓이 빠졌거나 USB 드라이브 연결이 끊겼습니다."
+                % (path, where))
+    if exc.errno in (errno.EACCES, errno.EPERM):
+        return "%s: 쓰기 권한이 없습니다. sudo 로 실행하세요." % path
+    if exc.errno == errno.EBUSY:
+        return ("%s: 장치가 사용 중입니다. 마운트되어 있으면 "
+                "umount 한 뒤 다시 하세요." % path)
+    return "%s: %s 쓰기 실패 - %s%s" % (path, where, exc, common)
+
+
 def write_sector(path, lba, data, sync=True):
     if len(data) % SECTOR:
         raise TokenError("섹터 크기(512B)의 배수가 아닌 데이터입니다.")
+    count = len(data) // SECTOR
     flags = os.O_WRONLY
     if not is_block_device(path):
         flags |= os.O_CREAT
-    fd = os.open(path, flags)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise TokenError(write_error(exc, path, lba, count))
     try:
         os.lseek(fd, lba * SECTOR, os.SEEK_SET)
         written = 0
         while written < len(data):
             written += os.write(fd, data[written:])
         if sync:
+            # 블록 장치의 쓰기는 페이지 캐시를 거친다. fsync 를 하지 않으면
+            # 오류가 나중 호출에서 터져 엉뚱한 섹터를 범인으로 지목한다.
             os.fsync(fd)
+    except OSError as exc:
+        raise TokenError(write_error(exc, path, lba, count))
     finally:
         os.close(fd)
 
@@ -356,6 +401,44 @@ def check_target(path, allow_create, force):
         raise TokenError("%s 를 찾을 수 없습니다." % path)
 
 
+def probe_writable(path):
+    """2880섹터를 채우기 '전에' 쓰기가 되는지 한 섹터로 확인한다.
+
+    쓰기 금지 탭이나 죽은 디스켓을 2~4분 기다린 뒤에 알려 주는 것은 쓸모가
+    없다. 헤더 섹터(LBA 0)는 어차피 덮어쓸 자리라 여기에 써 보고, fsync 로
+    실제로 매체까지 내려갔는지 확인한 뒤 되읽어 비교한다.
+    """
+    pattern = secrets.token_bytes(SECTOR)
+    write_sector(path, 0, pattern)
+    try:
+        back = read_sector(path, 0)
+    except TokenError as exc:
+        raise TokenError(
+            "%s: 방금 쓴 섹터를 되읽지 못했습니다 - %s" % (path, exc))
+    if back != pattern:
+        raise TokenError(
+            "%s: 쓰기가 매체에 반영되지 않았습니다 (되읽은 값이 다릅니다).\n"
+            "쓰기 금지 탭, 불량 디스켓, 또는 드라이브 고장입니다.\n"
+            "  sudo dmesg | tail -30  으로 원인을 확인하세요." % path)
+
+
+def verify_written(path, hdr, ikm, mackey):
+    """방금 만든 토큰을 되읽어 확인한다 (헤더 + 조각 + 카운터 2개)."""
+    got = Header.unpack(read_sector(path, 0))
+    if got.token_uuid != hdr.token_uuid or got.shard_lbas != hdr.shard_lbas:
+        raise TokenError(
+            "%s: 되읽은 헤더가 쓴 것과 다릅니다. 매체를 신뢰할 수 없습니다."
+            % path)
+    if collect_ikm(path, got) != ikm:
+        raise TokenError(
+            "%s: 되읽은 키 조각이 쓴 것과 다릅니다. 매체를 신뢰할 수 없습니다.\n"
+            "이 디스켓으로는 부팅할 수 없습니다. 다른 디스켓을 쓰세요." % path)
+    for lba in (got.seq_lba, got.seq_lba_mirror):
+        if unpack_seq(read_sector(path, lba), mackey) != 1:
+            raise TokenError(
+                "%s: 카운터 섹터 %d 를 되읽지 못했습니다." % (path, lba))
+
+
 def cmd_format(args):
     check_target(args.device, allow_create=True, force=args.force)
     if args.shards < 1 or args.shards > MAX_SHARDS:
@@ -379,13 +462,18 @@ def cmd_format(args):
                  created_at=int(datetime.datetime.now().timestamp()),
                  label=args.label)
 
+    # 0) 쓰기가 되는지 먼저 본다. 안 되면 여기서 끝낸다 (3분 기다리지 않는다).
+    probe_writable(args.device)
+
     # 1) 전체 섹터를 난수로 덮는다. 빈 영역과 키 영역이 구별되지 않게 한다.
+    #    청크마다 fsync 한다. 느려지는 대신 오류가 '그 청크'에서 잡히므로
+    #    불량 섹터의 위치를 바로 알려 줄 수 있다.
     sys.stderr.write("전체 %d 섹터를 난수로 채웁니다...\n" % FLOPPY_SECTORS)
     chunk = 64
     for base in range(0, FLOPPY_SECTORS, chunk):
         n = min(chunk, FLOPPY_SECTORS - base)
-        write_sector(args.device, base, secrets.token_bytes(n * SECTOR),
-                     sync=False)
+        write_sector(args.device, base, secrets.token_bytes(n * SECTOR))
+
     # 2) 키 조각, 카운터, 헤더(마지막)
     shards = [secrets.token_bytes(DEFAULT_SHARD_LEN) for _ in shard_lbas]
     for i, lba in enumerate(shard_lbas):
@@ -395,6 +483,10 @@ def cmd_format(args):
     write_sector(args.device, seq_lba, pack_seq(1, mackey))
     write_sector(args.device, seq_mirror, pack_seq(1, mackey))
     write_sector(args.device, 0, hdr.pack())
+
+    # 3) 되읽어 검증한다. 조용히 잘못 쓰인 토큰은 부팅 때가 되어서야
+    #    드러나므로, 만든 자리에서 확인한다.
+    verify_written(args.device, hdr, ikm, mackey)
 
     sys.stderr.write(
         "완료: %s\n  라벨      : %s\n  토큰 UUID : %s\n  shard LBA : %s\n"

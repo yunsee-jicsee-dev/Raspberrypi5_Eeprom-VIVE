@@ -301,6 +301,9 @@ sudo update-initramfs -u -k all
 | --- | --- |
 | `openssl kdf PBKDF2 실패` | initramfs 에 openssl 이 없거나 3.0 미만. `lsinitramfs ... \| grep openssl`, `apt install openssl`, `update-initramfs -u` |
 | `제한 시간 안에 토큰을 찾지 못했습니다` | USB 모듈 누락(점검 (3)) 또는 FDD 인식 지연. `TOKEN_WAIT` 를 늘린다 |
+| `섹터 N 쓰기 중 입출력 오류(EIO)` | ①디스켓 쓰기 금지 탭이 열려 있다 ②디스켓이 상했다 ③드라이브 고장. `cat /sys/block/sdX/ro` 가 1 이면 ①, `sudo dmesg \| tail -30` 의 `Write Protect is on` / `Medium Error` 로 구분된다 |
+| `매체가 읽기 전용입니다` | 쓰기 금지 탭을 닫는다 (구멍이 막혀 있어야 쓸 수 있다) |
+| `되읽은 키 조각이 쓴 것과 다릅니다` | 쓰기는 됐지만 매체가 값을 유지하지 못한다. 그 디스켓은 버린다 — 썼다면 부팅이 안 됐을 것이다 |
 | `shard N (LBA x): MAC 불일치` | 디스켓 손상. 백업 이미지로 새 디스켓을 만든다 (`docs/recovery.md`) |
 | `VIVE 토큰이 아닙니다` | 다른 디스켓이거나 다른 OS 가 포맷했다 |
 | 카운터 기록 실패 경고 | 쓰기 금지 탭 또는 불량 섹터. 부팅은 된다 |
