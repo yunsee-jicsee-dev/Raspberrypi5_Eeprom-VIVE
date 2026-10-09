@@ -1,0 +1,114 @@
+# viveboot 테스트 CI.
+#
+# 하는 일은 사람이 손으로 돌리는 것과 똑같다: `sh tests/run.sh`.
+# 실물 플로피도 root 권한도 필요 없고(1.44MB 이미지 파일로 돈다), 비밀값을
+# 쓰지 않으므로 이 파일에는 secrets 참조가 한 군데도 없다.
+#
+# CI 를 끄는 방법 (자세한 내용은 README 의 'CI' 절):
+#   1) 저장소 변수 VIVEBOOT_CI 를 off 로 둔다 -> 아래 jobs.tests.if 가 건너뛴다
+#   2) 커밋 메시지에 [skip ci] 를 넣는다       -> GitHub 가 실행을 만들지 않는다
+#   3) Actions 탭에서 이 워크플로를 Disable    -> 코드를 안 고치고 완전히 멈춘다
+name: tests
+
+on:
+  # 어느 브랜치든 push 되면 돈다. 전체 테스트가 10초가 안 되므로 다 돌려도
+  # 싸고, PR 없이 작업 브랜치에 바로 밀어넣는 지금 흐름을 그대로 받친다.
+  # PR 을 연 브랜치는 push 와 pull_request 로 두 번 돌게 되는데, 그게 거슬리면
+  # 아래를 `branches: [main]` 으로 좁히면 된다.
+  push:
+    branches: ['**']
+  # PR 에서는 '머지된 결과' 를 대상으로 돈다. push 때와 대상 커밋이 다르므로
+  # 둘 다 둔다 (main 이 그 사이 움직였을 때 깨지는 걸 여기서 잡는다).
+  pull_request:
+  # Actions 탭에서 손으로 돌린다. 코드를 건드리지 않고 "지금 이 브랜치
+  # 돌려봐" 를 할 수 있는 유일한 수단이고, 러너 이미지가 바뀌었는지
+  # 확인하고 싶을 때도 쓴다.
+  workflow_dispatch:
+  # schedule 은 일부러 넣지 않았다. 고정 KDF 벡터는 커밋이 없으면 바뀌지
+  # 않고, 러너의 openssl 이 바뀌어도 그건 실제 Pi 의 openssl 과 다른
+  # 물건이라 알림 가치가 낮다. 게다가 활동이 없는 저장소의 cron 은 60일 뒤
+  # GitHub 가 자동으로 끈다. 환경 변화를 확인하고 싶으면 위 수동 실행으로
+  # 충분하다.
+
+# 이 잡은 저장소를 읽기만 한다. 딸려 오는 GITHUB_TOKEN 권한을 좁혀 둔다.
+permissions:
+  contents: read
+
+# 같은 브랜치에 연달아 push 하면 앞선 실행을 취소한다.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    # --- CI on/off 스위치 ---
+    # Settings > Secrets and variables > Actions > Variables 에서
+    # VIVEBOOT_CI = off 로 두면 이 잡을 건너뛴다. 변수가 없으면(기본) 돈다.
+    # 건너뛴 잡은 '실패' 가 아니라 'skipped' 이므로 PR 체크는 초록으로 남는다.
+    if: ${{ vars.VIVEBOOT_CI != 'off' }}
+
+    # ubuntu-latest 가 아니라 못박는다. latest 는 어느 날 다음 LTS 로 옮겨가면서
+    # python3 / openssl / shellcheck 버전을 한꺼번에 바꾼다. 이 저장소의
+    # 테스트는 openssl 3.x 의 `kdf PBKDF2` 출력과 shellcheck 지적 목록에
+    # 직접 걸려 있어서, 러너가 조용히 바뀌는 쪽이 더 위험하다.
+    # (ubuntu-24.04 = python 3.12.3, openssl 3.0.13, shellcheck 0.9.0)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: 체크아웃
+        uses: actions/checkout@v5
+        with:
+          # 테스트는 히스토리를 보지 않는다.
+          fetch-depth: 1
+          # 이 잡은 push 하지 않는다. 자격증명을 러너에 남기지 않는다.
+          persist-credentials: false
+
+      - name: 도구 확인 (python3 / openssl / shellcheck)
+        run: |
+          python3 -VV
+          openssl version
+          shellcheck --version
+          # 부팅 경로(initramfs)가 쓰는 것과 똑같은 호출로 openssl 3.0 의
+          # kdf PBKDF2 가 실제로 되는지 본다. install.sh 의 점검과 같은 명령이고,
+          # 이게 없는 openssl 이면 테스트가 아니라 여기서 먼저 멈추게 한다.
+          openssl kdf -keylen 32 -kdfopt digest:SHA2-256 \
+            -kdfopt hexpass:00 -kdfopt hexsalt:00 -kdfopt iter:1000 PBKDF2
+
+      - name: sh tests/run.sh
+        # tee 의 실패를 잡으려면 pipefail 이 필요하다 (기본 쉘에는 없다).
+        shell: bash
+        env:
+          # tests/run.sh 는 shellcheck 가 없으면 조용히 건너뛴다.
+          # CI 에서는 그걸 금지한다 - 없으면 실패다.
+          VIVEBOOT_REQUIRE_SHELLCHECK: '1'
+        run: |
+          set -euo pipefail
+          # 테스트 출력(ok/FAIL 줄, 불일치한 암호문, keyscript 의 stderr)은
+          # 가공하지 않고 그대로 로그에 남긴다. 실패를 읽을 유일한 단서다.
+          sh tests/run.sh 2>&1 | tee "$RUNNER_TEMP/tests.log"
+
+      - name: 실패 요약
+        # 로그를 펼치지 않고도 무엇이 깨졌는지 실행 요약 화면에서 보이게 한다.
+        if: failure()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/tests.log"
+          {
+            echo '## sh tests/run.sh 실패'
+            echo
+            if [ -s "$log" ]; then
+              echo '### FAIL 로 표시된 줄'
+              echo '```'
+              grep -nE 'FAIL|ERROR' "$log" | head -n 30 || true
+              echo '```'
+              echo '### 마지막 40줄'
+              echo '```'
+              tail -n 40 "$log" || true
+              echo '```'
+            else
+              echo '테스트가 시작되기 전에 끝났습니다. 위의 "도구 확인" 단계를 보세요.'
+            fi
+            echo
+            echo '전체 출력은 이 실행의 로그에 그대로 남아 있습니다.'
+          } >> "$GITHUB_STEP_SUMMARY"

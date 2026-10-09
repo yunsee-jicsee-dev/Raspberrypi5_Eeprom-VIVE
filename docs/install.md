@@ -136,6 +136,15 @@ PIN 을 쓰는 토큰이면 PIN 도 물어본다. 스크립트로 돌릴 때는 
 
 하나라도 어긋나면 재부팅하지 않는다.
 
+아래 (1)~(6) 을 한 번에 보려면:
+
+```sh
+sudo vive-boot-mode status --verify
+```
+
+`--verify` 는 토큰이 실제로 LUKS 를 여는지까지 확인한다((6) 에 해당). 손으로
+하나씩 확인하려면 다음을 그대로 따라간다.
+
 ```sh
 # (1) crypttab 이 keyscript 를 가리키는지
 grep viveboot /etc/crypttab
@@ -212,6 +221,62 @@ cryptsetup: cryptroot: 해제 실패
 ```
 
 이 확인까지 해 보면 설치가 끝난 것이다.
+
+## 10. 켜고 끄기 (제거하지 않고)
+
+설치해 둔 채로 토큰 요구만 켜고 끈다. 끈다고 토큰 키슬롯이 지워지는 것은
+아니다 — 다시 켜면 같은 디스켓으로 돌아온다.
+
+```sh
+sudo vive-boot-mode status      # 현재 모드와 근거
+sudo vive-boot-mode off         # 패스프레이즈로 부팅하게
+sudo vive-boot-mode on          # 다시 토큰 필수로
+```
+
+둘 다 `/etc/crypttab` 의 `keyscript=` 를 고치고 `update-initramfs -u -k all`
+까지 돌린다. 끝나면 모드가 실제로 바뀌었는지 다시 읽어 확인하고, 어긋나면
+`crypttab` 을 되돌린다. 백업은 `/etc/crypttab.vive-boot-mode.bak`.
+
+### 사전 검증 — 이것 때문에 이 도구를 쓴다
+
+`crypttab` 을 손으로 고치는 것과의 차이는 켜기 전에 확인한다는 점이다.
+아래는 성공했을 때 나오는 줄들이다 (장치 이름과 슬롯 번호는 환경마다 다르다):
+
+```
+$ sudo vive-boot-mode on
+vive-boot-mode: 토큰: /dev/sda
+vive-boot-mode: 토큰에서 암호문을 파생합니다 (부팅 때와 같은 키스크립트, 카운터는 올리지 않음)
+vive-boot-mode: 그 암호문이 /dev/nvme0n1p2 를 여는지 확인합니다
+vive-boot-mode: 토큰이 키슬롯 1 을 엽니다
+vive-boot-mode: 키슬롯 2 개 (0 1 ) - 복구 경로가 남아 있습니다
+vive-boot-mode: 백업: /etc/crypttab.vive-boot-mode.bak
+vive-boot-mode: /etc/crypttab: 'cryptroot' -> on
+```
+
+- `on` — 토큰에서 파생한 암호문이 정말 이 LUKS 를 여는지 확인한다. 확인은
+  **부팅 때 실제로 도는 그 키스크립트**를 그대로 돌려서 한다(파이썬 쪽
+  `derive` 가 아니다). openssl/PBKDF2 경로까지 같이 검증된다. 이때 토큰의
+  부팅 카운터는 올리지 않는다 — 올리면 다음 부팅에 복제 경고가 나고
+  `SEQ_POLICY=poweroff` 면 전원이 꺼진다.
+  토큰 외 키슬롯이 하나도 없으면 켜지 않는다. 토큰을 잃으면 데이터도 잃는
+  구성이기 때문이다.
+- `off` — 패스프레이즈를 입력받아 그것이 **토큰 슬롯이 아닌** 다른 슬롯을
+  여는지 확인한다. 토큰에서 뽑은 64자 암호문을 그대로 붙여 넣으면 같은 슬롯이
+  열리므로 걸러낸다. 복구 경로가 없는데 끄는 것을 막는 장치다.
+
+검증을 건너뛰려면 `--force`. 그 경우 다음 부팅에 못 들어갈 수 있다.
+
+### 다음 부팅 한 번만 우회
+
+```sh
+sudo vive-boot-mode bypass on    # /boot/firmware/cmdline.txt 에 viveboot=off
+sudo reboot
+# 들어간 뒤
+sudo vive-boot-mode bypass off   # 반드시 되돌린다
+```
+
+`initramfs` 를 다시 만들지 않으므로 빠르고, 디스켓이 상했거나 드라이브가
+고장 났을 때의 1순위 복구 경로다 (`docs/recovery.md` §4).
 
 ## 설정 바꾸기
 

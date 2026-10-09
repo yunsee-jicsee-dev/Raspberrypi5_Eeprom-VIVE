@@ -13,6 +13,7 @@ VB_TAG="viveboot-keyscript"
 VB_LIB=${VIVEBOOT_LIB:-/usr/lib/viveboot/viveboot-common.sh}
 VB_CONF=${VIVEBOOT_CONF:-/etc/viveboot/viveboot.conf}
 VB_RUN=${VIVEBOOT_RUN:-/run/viveboot}
+VB_CMDLINE=${VIVEBOOT_CMDLINE:-/proc/cmdline}
 
 [ -r "$VB_LIB" ] || {
 	printf '%s: 오류: %s 를 찾을 수 없습니다\n' "$VB_TAG" "$VB_LIB" >&2
@@ -28,9 +29,29 @@ TOKEN_MAX_SECTORS=8192
 SEQ_UPDATE=yes
 PIN_PROMPT="VIVE 토큰 PIN: "
 CACHE_IKM=yes
+BYPASS_CMDLINE=yes
+BYPASS_PROMPT="패스프레이즈 (viveboot 우회): "
 
 # shellcheck source=../../etc/viveboot.conf
 [ -r "$VB_CONF" ] && . "$VB_CONF"
+
+# --- 0) 한 번만 우회: 커널 커맨드라인의 viveboot=off -----------------------
+# 토큰을 잃었거나 USB FDD 가 고장 났을 때, initramfs 를 다시 만들지 않고
+# 이번 부팅만 패스프레이즈로 들어가는 길이다.
+#
+# 중요: 여기서 아무것도 출력하지 않고 끝내면 안 된다. cryptsetup 은
+# `keyscript | cryptsetup --key-file=- open` 으로 호출되므로, 빈 출력은
+# "Nothing to read on input." 으로 실패할 뿐이고 패스프레이즈를 묻지 않는다.
+# 그래서 cryptsetup 의 기본 대화형 경로와 똑같이 askpass 를 직접 띄운다.
+if [ "$BYPASS_CMDLINE" = yes ] && vb_cmdline_word viveboot=off "$VB_CMDLINE"; then
+	if vb_askpass=$(vb_askpass_path); then
+		vb_log "커널 커맨드라인에 viveboot=off - 토큰을 건너뛰고 패스프레이즈를 묻습니다"
+		exec "$vb_askpass" "${CRYPTTAB_NAME:-cryptroot} $BYPASS_PROMPT"
+	fi
+	vb_die "viveboot=off 로 우회하려 했지만 askpass 를 찾을 수 없습니다"
+	vb_warn "initramfs 쉘에서 'cryptsetup open' 으로 직접 여세요 (docs/recovery.md §4)"
+	exit 1
+fi
 
 mkdir -p "$VB_RUN" 2>/dev/null || true
 chmod 700 "$VB_RUN" 2>/dev/null || true

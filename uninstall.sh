@@ -19,7 +19,9 @@ log() { printf 'uninstall: %s\n' "$*" >&2; }
 if grep -q 'viveboot-keyscript' "$DESTDIR$PREFIX/etc/crypttab" 2>/dev/null; then
 	log "경고: /etc/crypttab 에 아직 viveboot keyscript 항목이 있습니다."
 	log "       지금 제거하면 다음 부팅에서 루트를 열 수 없습니다."
-	log "       crypttab 을 먼저 고치고 update-initramfs -u 를 실행하세요."
+	log "       먼저 끄세요 (패스프레이즈 확인까지 해 줍니다):"
+	log "         sudo vive-boot-mode off"
+	log "       직접 하려면 crypttab 을 고치고 update-initramfs -u 를 실행하세요."
 	exit 1
 fi
 
@@ -29,6 +31,7 @@ fi
 
 rm -f "$DESTDIR$PREFIX/usr/bin/vive-floppy-token" \
 	"$DESTDIR$PREFIX/usr/bin/vive-luks-enroll" \
+	"$DESTDIR$PREFIX/usr/bin/vive-boot-mode" \
 	"$DESTDIR$PREFIX/usr/share/initramfs-tools/hooks/viveboot" \
 	"$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-bottom/viveboot" \
 	"$DESTDIR$PREFIX/lib/systemd/system/viveboot-seqcheck.service"

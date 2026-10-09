@@ -1,0 +1,23 @@
+# shellcheck 설정 - 저장소 전체에 적용된다.
+#
+# 규칙을 tests/run.sh 의 명령줄이 아니라 이 파일에 두는 이유: 손으로
+# `shellcheck lib/viveboot-common.sh` 를 쳤을 때, 편집기 플러그인에서,
+# 그리고 CI 에서 모두 같은 결과가 나와야 한다.
+
+# 이 저장소의 쉘 코드는 전부 POSIX sh (dash / busybox ash) 전용이다.
+# 쉬뱅이 없는 파일(lib/viveboot-common.sh, etc/viveboot.conf)도 sh 로 본다.
+shell=sh
+
+# SC2034 "변수가 쓰이지 않음" 끄기.
+# lib/viveboot-common.sh 는 쉘 라이브러리다. vb_parse_header 가 설정하는
+# VB_UUID_HEX / VB_SEQ_LBA / VB_SEQ_LBA_MIRROR / VB_PIN_REQUIRED /
+# VB_SEQ_ENABLED / VB_LABEL_HEX, vb_find_token 이 설정하는 VB_DEVICE,
+# 그리고 VB_STATE_INFO 는 이 파일을 source 하는
+# initramfs/scripts/viveboot-keyscript 와 tools/viveboot-seqcheck 가 쓴다.
+# 파일 하나만 보는 shellcheck 는 그걸 알 수 없어 전부 오탐이 된다.
+disable=SC2034
+
+# 주의: severity 는 .shellcheckrc 에서 읽히지 않는다 (0.9.0 / 0.10.0 에서
+# 확인했다 - 모르는 키를 조용히 무시한다). info 단계 지적
+# (SC2015 'A && B || C', SC1091 source 추적 불가, SC2018/SC2019 tr 범위,
+# SC2317 trap 핸들러)은 tests/run.sh 가 --severity=warning 으로 걸러낸다.

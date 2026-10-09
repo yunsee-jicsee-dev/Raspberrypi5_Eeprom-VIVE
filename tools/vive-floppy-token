@@ -47,6 +47,11 @@ DEFAULT_SHARDS = 6
 DEFAULT_SHARD_LEN = 32
 DEFAULT_ITER = 200000
 
+# 이웃한 shard 사이에 보장할 최소 간격(섹터). 구간 경계에 두 개가 붙어 버리면
+# 불량 트랙 하나나 연속 덮어쓰기 한 번에 두 조각이 같이 날아간다.
+# 구간이 좁아서(= shard 개수가 많아서) 이 간격을 낼 수 없으면 가능한 만큼만 띄운다.
+SHARD_MIN_GAP = 101
+
 # 헤더 섹터는 어떤 OS도 자동 마운트하지 않아야 한다. FAT BPB로 보이지 않도록
 # 0x1FE 의 부트 시그니처(0x55AA)를 쓰지 않고, 0번 바이트도 점프 명령이 아니다.
 FORBIDDEN_BOOTSIG = b"\x55\xaa"
@@ -250,14 +255,25 @@ def pick_shard_lbas(count):
     0번(헤더)과 카운터용 2섹터를 제외한 영역을 count개 구간으로 나눠
     구간마다 하나씩 무작위로 고른다. 연속 배치가 아니어서 부분 덮어쓰기나
     단순 복사 시도에 더 잘 노출된다.
+
+    구간 양끝은 guard 만큼 비워 둔다. 이게 없으면 이웃한 두 구간이 각자
+    경계 바로 옆을 골라 조각 두 개가 수십 섹터 안에 붙어 버린다
+    (예: 1436 과 1494). 구간을 나눈 의미가 없어지고,
+    tests/test_token.py 의 test_shards_are_scattered 가 간헐적으로 깨졌다.
+    고를 수 있는 위치가 구간당 479 -> 379 로 줄지만, shard LBA 는 헤더에
+    평문으로 적혀 있어 위치를 숨기는 것이 보안 요건이 아니므로 손해가 없다.
     """
     seq_lba, seq_mirror = 1, 2
     reserved = {0, seq_lba, seq_mirror}
     usable = [lba for lba in range(3, FLOPPY_SECTORS) if lba not in reserved]
     span = len(usable) // count
+    # 양쪽에서 guard 씩 물러나면 이웃 간 간격이 최소 2*guard + 1 이 된다.
+    guard = min(SHARD_MIN_GAP // 2, max(0, (span - 1) // 2))
     chosen = []
     for i in range(count):
         window = usable[i * span:(i + 1) * span] or usable
+        if len(window) > 2 * guard:
+            window = window[guard:len(window) - guard]
         chosen.append(secrets.choice(window))
     return sorted(set(chosen)), seq_lba, seq_mirror
 

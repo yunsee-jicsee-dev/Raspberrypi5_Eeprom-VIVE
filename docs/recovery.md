@@ -77,7 +77,35 @@ PIN 은 어디에도 저장되지 않는다. 검증자도 두지 않았다 (`doc
 
 ## 4. 복구용 패스프레이즈로 부팅하기
 
-디스켓 없이 부팅하면 60초 뒤 initramfs 쉘로 떨어진다.
+세 가지 길이 있다. 아직 부팅된 상태라면 (a), 이미 못 들어가는 상태라면 (c).
+
+### (a) 지금 부팅되어 있다 — 다음 부팅 한 번만 우회
+
+```sh
+sudo vive-boot-mode bypass on
+sudo reboot
+# 들어간 뒤 반드시 되돌린다
+sudo vive-boot-mode bypass off
+```
+
+`/boot/firmware/cmdline.txt` 에 `viveboot=off` 를 넣는다. 키스크립트는 그
+단어를 보면 토큰을 아예 읽지 않고 `cryptsetup` 의 기본 대화형 경로처럼
+패스프레이즈를 묻는다. `initramfs` 를 다시 만들지 않으니 가장 빠르다.
+토큰의 부팅 카운터도 올라가지 않는다.
+
+### (b) 당분간 토큰을 쓰지 않겠다
+
+```sh
+sudo vive-boot-mode off
+```
+
+패스프레이즈 키슬롯이 있는지 확인한 뒤 `crypttab` 에서 `keyscript=` 를 빼고
+`initramfs` 를 다시 만든다. 토큰 키슬롯은 남으므로 나중에
+`sudo vive-boot-mode on` 으로 돌아온다 (`docs/install.md` §10).
+
+### (c) 이미 부팅이 막혔다 — initramfs 쉘
+
+디스켓 없이 부팅하면 `TOKEN_WAIT` 초(기본 60) 뒤 initramfs 쉘로 떨어진다.
 
 ```sh
 (initramfs) cryptsetup open /dev/nvme0n1p2 cryptroot
@@ -94,6 +122,14 @@ Enter passphrase for /dev/nvme0n1p2: ********
 (initramfs) blkid | grep crypto_LUKS
 (initramfs) ls /dev/nvme* /dev/mmcblk*
 ```
+
+들어간 뒤에는 (a) 나 (b) 로 정리한다. 매번 initramfs 쉘을 거치지 않으려면
+`bypass on` 을 걸어 두고 원인을 해결하는 쪽이 낫다.
+
+다른 기계에서 SD/NVMe 를 꺼내 고칠 수 있다면, `cmdline.txt` 는 암호화되지
+않은 FAT 파티션에 있으므로 거기에 ` viveboot=off` 를 직접 덧붙여도 (a) 와
+같은 효과가 난다. 단 `viveboot.conf` 에 `BYPASS_CMDLINE=no` 로 두었다면
+이 길은 막혀 있다 (그때는 (c) 뿐이다).
 
 ## 5. viveboot 를 완전히 되돌리기
 

@@ -1,5 +1,7 @@
 # Raspberrypi5_Eeprom-VIVE — 플로피 섹터 보안 부팅 (viveboot)
 
+[![tests](https://github.com/yunsee-jicsee-dev/Raspberrypi5_Eeprom-VIVE/actions/workflows/tests.yml/badge.svg)](https://github.com/yunsee-jicsee-dev/Raspberrypi5_Eeprom-VIVE/actions/workflows/tests.yml)
+
 USB 플로피 디스크의 **원시 섹터**를 물리 부팅 토큰으로 쓰는 Raspberry Pi 5용
 보안 부팅 구성이다. 플로피가 드라이브에 꽂혀 있지 않으면 암호화된 루트
 파일시스템이 열리지 않고 부팅이 initramfs 에서 멈춘다.
@@ -51,12 +53,70 @@ python3 tools/vive-floppy-token info /tmp/token.img
 sh tests/run.sh          # 파이썬 구현과 initramfs 쉘 구현이 같은 키를 내는지 검증
 ```
 
+## 켜고 끄기
+
+제거하지 않고 토큰 요구만 켜고 끈다. 끈 상태에서도 토큰 키슬롯은 LUKS 안에
+그대로 남아 있어서, 다시 켜면 같은 디스켓으로 돌아온다.
+
+```sh
+sudo vive-boot-mode status      # 현재 모드 + 그 판단의 근거 전부
+sudo vive-boot-mode off         # 패스프레이즈로 부팅 (토큰 키슬롯은 유지)
+sudo vive-boot-mode on          # 다시 토큰 필수로
+sudo vive-boot-mode bypass on   # 다음 부팅 한 번만 우회
+```
+
+`on`/`off` 는 `/etc/crypttab` 의 `keyscript=` 를 넣고 빼고 `update-initramfs`
+까지 돌린다. 끈 상태의 부팅 경로에는 viveboot 코드가 아예 들어오지 않는다 —
+안전장치가 viveboot 자신의 정확성에 의존하지 않게 하려는 선택이다.
+
+**사전 검증이 이 도구의 핵심이다.** 그냥 플래그를 뒤집는 것이 아니다.
+
+| | 켜기 전에 확인하는 것 | 통과 못 하면 |
+| --- | --- | --- |
+| `on` | 토큰에서 파생한 암호문이 **정말 이 LUKS 를 여는지** (부팅 때 도는 그 키스크립트를 그대로 실행), 그리고 토큰 외 키슬롯이 남아 있는지 | 켜지 않고 `crypttab` 을 그대로 둔다 |
+| `off` | 입력한 패스프레이즈가 **토큰 슬롯이 아닌 다른 슬롯**을 여는지 | 끄지 않는다 (복구 경로 없이 끄는 것을 막는다) |
+
+검증을 건너뛰려면 `--force` 가 필요하고, 그 경우 다음 부팅에서 못 들어갈 수
+있다고 두 번 경고한다. `update-initramfs` 가 실패하면 `crypttab` 을 되돌린다.
+
+`bypass on` 은 `/boot/firmware/cmdline.txt` 에 `viveboot=off` 를 넣는다. 이
+경우 키스크립트는 토큰을 아예 읽지 않고 `cryptsetup` 의 기본 대화형 경로와
+똑같이 패스프레이즈를 묻는다. 토큰을 잃었을 때 `initramfs` 를 다시 만들지 않고
+들어가는 길이다 — 자세한 것은 [`docs/recovery.md`](docs/recovery.md) §4.
+그 파일은 암호화되지 않은 FAT 파티션에 있지만, 넣어서 얻는 것은 패스프레이즈를
+묻는 화면뿐이므로 기밀성은 그대로다. 그 경로까지 막으려면
+`viveboot.conf` 에서 `BYPASS_CMDLINE=no`.
+
+## CI
+
+위의 `sh tests/run.sh` 를 GitHub Actions 가 push 와 PR 마다 그대로 돌린다
+([`.github/workflows/tests.yml`](.github/workflows/tests.yml)). 비밀값을 쓰지
+않고 권한은 `contents: read` 뿐이다. Actions 탭에서 손으로 돌릴 수도 있다
+(Run workflow).
+
+CI 에서는 `VIVEBOOT_REQUIRE_SHELLCHECK=1` 로 두어 shellcheck 가 없으면 실패로
+본다. 손으로 돌릴 때도 똑같이 하려면 `apt install shellcheck` 뒤에
+`VIVEBOOT_REQUIRE_SHELLCHECK=1 sh tests/run.sh`. shellcheck 규칙은
+[`.shellcheckrc`](.shellcheckrc) 에 있다.
+
+CI 를 끄고 켜는 방법:
+
+| 방법 | 범위 | 하는 법 |
+| --- | --- | --- |
+| 저장소 변수 | 저장소 전체, 되돌리기 쉬움 | Settings → Secrets and variables → Actions → Variables 에 `VIVEBOOT_CI` = `off`. 다시 켜려면 변수를 지우거나 `on` 으로 바꾼다 |
+| 커밋 메시지 | 그 커밋 하나 | 커밋 메시지에 `[skip ci]` 를 넣는다 (GitHub 기본 기능) |
+| 워크플로 비활성화 | 저장소 전체, 완전 정지 | Actions 탭 → tests → `...` → Disable workflow |
+
+변수로 끈 경우 잡은 '실패' 가 아니라 'skipped' 로 남으므로 PR 체크는 초록으로
+유지된다.
+
 ## 구성
 
 | 경로 | 설치 위치 | 역할 |
 | --- | --- | --- |
 | `tools/vive-floppy-token` | `/usr/bin/` | 토큰 생성·검증·백업·카운터 관리 (Python 3) |
 | `tools/vive-luks-enroll` | `/usr/bin/` | LUKS 키슬롯 등록/해제, `crypttab` 연결 |
+| `tools/vive-boot-mode` | `/usr/bin/` | 제거 없이 켜고 끄기 (`on`/`off`/`status`/`bypass`) |
 | `tools/viveboot-seqcheck` | `/usr/lib/viveboot/` | 부팅 후 복제/롤백 탐지 |
 | `lib/viveboot-common.sh` | `/usr/lib/viveboot/` | 섹터 파싱·키 파생 공용 함수 (POSIX sh) |
 | `initramfs/scripts/viveboot-keyscript` | `/usr/lib/viveboot/` | `crypttab` 의 `keyscript=` 본체 |

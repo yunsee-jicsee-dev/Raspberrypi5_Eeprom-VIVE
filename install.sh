@@ -27,6 +27,7 @@ done
 
 install -m 0755 "$SRC/tools/vive-floppy-token" "$BIN/vive-floppy-token"
 install -m 0755 "$SRC/tools/vive-luks-enroll" "$BIN/vive-luks-enroll"
+install -m 0755 "$SRC/tools/vive-boot-mode" "$BIN/vive-boot-mode"
 install -m 0755 "$SRC/tools/viveboot-seqcheck" "$LIBDIR/viveboot-seqcheck"
 install -m 0644 "$SRC/lib/viveboot-common.sh" "$LIBDIR/viveboot-common.sh"
 install -m 0755 "$SRC/initramfs/scripts/viveboot-keyscript" \
@@ -82,4 +83,11 @@ install: 설치 완료.
   2) sudo vive-floppy-token backup /dev/sdX /root/token-backup.img
   3) sudo vive-luks-enroll --token /dev/sdX --crypt-device /dev/<LUKS파티션>
   4) 재부팅 전 docs/install.md 의 '재부팅 전 점검' 을 반드시 확인
+     또는 sudo vive-boot-mode status 로 한 화면에 확인
+
+켜고 끄기 (제거하지 않고):
+  sudo vive-boot-mode status      현재 모드와 근거
+  sudo vive-boot-mode off         패스프레이즈로 부팅 (토큰 키슬롯은 남는다)
+  sudo vive-boot-mode on          다시 토큰 필수로
+  sudo vive-boot-mode bypass on   다음 부팅 한 번만 우회
 EOF

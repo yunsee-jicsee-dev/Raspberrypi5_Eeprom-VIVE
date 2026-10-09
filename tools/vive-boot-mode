@@ -1,0 +1,792 @@
+#!/bin/sh
+# vive-boot-mode - viveboot 를 제거하지 않고 켜고 끈다.
+#
+#   on      토큰이 있어야 루트가 열린다 (crypttab 에 keyscript= 를 넣는다)
+#   off     패스프레이즈로 루트를 연다 (keyscript= 를 뺀다. 키슬롯은 그대로)
+#   status  현재 모드와 그 근거를 한 화면에 보여 준다
+#   bypass  다음 부팅 한 번만 우회 (커널 커맨드라인 viveboot=off)
+#
+# 끄는 것은 '제거'가 아니다. 토큰 키슬롯은 LUKS 안에 그대로 남아 있고,
+# 다시 'on' 하면 같은 토큰으로 돌아온다.
+#
+# 왜 crypttab 을 고치는가: /etc/crypttab 은 update-initramfs 때
+# initramfs 안의 /cryptroot/crypttab 으로 복사된다. 부팅 시 cryptsetup 은
+# 그 사본만 읽는다. 그래서 끈 상태의 부팅 경로에는 viveboot 코드가 아예
+# 들어오지 않는다 - 안전장치가 viveboot 자신의 정확성에 의존하지 않는다.
+set -eu
+
+VB_TAG="vive-boot-mode"
+
+# 경로/명령은 테스트에서만 덮어쓴다. 평소에는 설치된 기본값을 쓴다.
+VB_LIB=${VIVEBOOT_LIB:-/usr/lib/viveboot/viveboot-common.sh}
+CRYPTTAB=${CRYPTTAB:-/etc/crypttab}
+KEYSCRIPT=${KEYSCRIPT:-/usr/lib/viveboot/viveboot-keyscript}
+TOKEN_TOOL=${TOKEN_TOOL:-/usr/bin/vive-floppy-token}
+VB_CONF=${VIVEBOOT_CONF:-/etc/viveboot/viveboot.conf}
+CRYPTSETUP=${CRYPTSETUP:-cryptsetup}
+UPDATE_INITRAMFS=${UPDATE_INITRAMFS:-update-initramfs}
+LSINITRAMFS=${LSINITRAMFS:-lsinitramfs}
+VB_RUN=${VIVEBOOT_RUN:-/run/viveboot}
+VB_CMDLINE=${VIVEBOOT_CMDLINE:-/proc/cmdline}
+BOOT_CMDLINE=${VIVEBOOT_BOOT_CMDLINE:-/boot/firmware/cmdline.txt}
+TMPBASE=${VIVEBOOT_TMPBASE:-/run}
+SEQ_STATE=${VIVEBOOT_SEQ_STATE:-/var/lib/viveboot/state}
+MODE_STATE=${VIVEBOOT_MODE_STATE:-/var/lib/viveboot/boot-mode}
+BACKUP="$CRYPTTAB.vive-boot-mode.bak"
+
+log() { printf '%s: %s\n' "$VB_TAG" "$*" >&2; }
+warn() { printf '%s: 경고: %s\n' "$VB_TAG" "$*" >&2; }
+die() {
+	printf '%s: 오류: %s\n' "$VB_TAG" "$*" >&2
+	exit 1
+}
+
+# vb_cmdline_word 와 vb_askpass_path 를 쓴다. 키스크립트와 같은 구현이어야
+# 하므로 복사하지 않고 공용 함수를 그대로 쓴다 (viveboot-seqcheck 와 같은 방식).
+[ -r "$VB_LIB" ] || die "$VB_LIB 를 찾을 수 없습니다 (install.sh 를 먼저 실행하세요)"
+# shellcheck source=../lib/viveboot-common.sh
+. "$VB_LIB"
+
+usage() {
+	cat >&2 <<'USAGE'
+사용법:
+  vive-boot-mode status [--verify]
+  vive-boot-mode on  [옵션]          토큰 필수로 바꾼다
+  vive-boot-mode off [옵션]          패스프레이즈로 부팅하게 바꾼다
+  vive-boot-mode bypass on|off       다음 부팅 한 번만 우회 (cmdline.txt)
+
+옵션:
+  --name NAME          crypttab 의 매핑 이름 (생략 시 자동 판별)
+  --crypt-device DEV   LUKS 파티션 (생략 시 crypttab 에서 찾는다)
+  --token DEV          토큰 장치 또는 이미지 (on 의 사전 검증용. 생략 시 탐색)
+  --pin PIN            토큰 PIN (생략 시 필요할 때 물어본다)
+  --force              사전 검증을 건너뛴다. 다음 부팅에서 못 들어갈 수 있다
+  --no-initramfs       update-initramfs 를 실행하지 않는다 (직접 실행해야 한다)
+  --verify             status 에서 토큰이 실제로 LUKS 를 여는지까지 확인한다
+  -h, --help           이 도움말
+
+사전 검증 (--force 로만 건너뛸 수 있다):
+  on  - 토큰에서 파생한 암호문이 정말 이 LUKS 를 여는지 먼저 확인한다.
+        확인 전에 켜면 다음 부팅에서 루트에 못 들어간다.
+  off - 패스프레이즈를 입력받아 그것이 토큰 슬롯이 '아닌' 다른 키슬롯을
+        여는지 확인한다. 복구 경로가 없는데 끄는 것을 막는다.
+
+실패하면 /etc/crypttab 을 원래대로 되돌린다 (백업: /etc/crypttab.vive-boot-mode.bak).
+USAGE
+	exit 2
+}
+
+# ---------------------------------------------------------------------------
+# crypttab 읽기 (순수 텍스트. root 도 장치도 필요 없다)
+# ---------------------------------------------------------------------------
+
+# vb_names  -> 주석이 아닌 항목의 매핑 이름들
+vb_names() {
+	awk '!/^[ \t]*#/ && NF >= 2 { print $1 }' "$CRYPTTAB"
+}
+
+# vb_field <name> <칸번호>  -> 그 칸 (없으면 빈 문자열)
+vb_field() {
+	awk -v n="$1" -v f="$2" \
+		'!/^[ \t]*#/ && $1 == n { print (f <= NF ? $f : ""); exit }' \
+		"$CRYPTTAB"
+}
+
+# vb_keyscript_of <name>  -> keyscript= 옵션의 값 (없으면 빈 문자열)
+vb_keyscript_of() {
+	awk -v n="$1" '
+	!/^[ \t]*#/ && $1 == n {
+		c = split($4, a, ",")
+		for (i = 1; i <= c; i++) {
+			if (a[i] ~ /^keyscript=/) {
+				sub(/^keyscript=/, "", a[i])
+				print a[i]
+				break
+			}
+		}
+		exit
+	}' "$CRYPTTAB"
+}
+
+# vb_mode_of <name>  -> on | off | other | none
+#   other = 우리 것이 아닌 keyscript 가 걸려 있다 (건드리지 않는다)
+vb_mode_of() {
+	_ks=$(vb_keyscript_of "$1")
+	if ! vb_names | grep -qxF -- "$1"; then
+		printf 'none'
+	elif [ -z "$_ks" ]; then
+		printf 'off'
+	elif [ "$_ks" = "$KEYSCRIPT" ]; then
+		printf 'on'
+	else
+		printf 'other'
+	fi
+}
+
+# vb_pick_name  -> 작업 대상 매핑 이름
+#   1) 우리 keyscript 가 걸린 항목 (on -> off 방향)
+#   2) 지난번에 끈 항목 ($MODE_STATE 에 적어 둔다. off -> on 방향)
+#   3) 항목이 하나뿐이면 그것
+#   4) swap/tmp 가 아니고 initramfs 옵션이 붙은 항목이 하나뿐이면 그것
+#      (cryptroot + cryptswap 처럼 흔한 구성을 자동으로 고른다)
+#   그 밖에는 --name 을 요구한다.
+vb_pick_name() {
+	_n=$(awk -v ks="keyscript=$KEYSCRIPT" \
+		'!/^[ \t]*#/ && NF >= 4 && index($4, ks) { print $1; exit }' \
+		"$CRYPTTAB")
+	if [ -n "$_n" ]; then
+		printf '%s' "$_n"
+		return 0
+	fi
+	if [ -r "$MODE_STATE" ]; then
+		_n=$(sed -n 's/^name=//p' "$MODE_STATE" | tail -n 1)
+		if [ -n "$_n" ] && vb_names | grep -qxF -- "$_n"; then
+			printf '%s' "$_n"
+			return 0
+		fi
+	fi
+	_c=$(vb_names | wc -l)
+	if [ "$_c" -eq 1 ]; then
+		vb_names
+		return 0
+	fi
+	[ "$_c" -eq 0 ] \
+		&& die "$CRYPTTAB 에 항목이 없습니다. vive-luks-enroll 을 먼저 실행하세요"
+	_cand=$(awk '!/^[ \t]*#/ && NF >= 4 &&
+		$4 ~ /(^|,)initramfs(,|$)/ &&
+		$4 !~ /(^|,)swap(,|$)/ && $4 !~ /(^|,)tmp(,|$)/ { print $1 }' "$CRYPTTAB")
+	if [ "$(printf '%s\n' "$_cand" | grep -c .)" = 1 ]; then
+		printf '%s' "$_cand"
+		return 0
+	fi
+	die "$CRYPTTAB 에 후보 항목이 여러 개입니다. --name 으로 하나를 지정하세요"
+}
+
+# vb_remember <name>  작업 대상을 기억한다 (다음 'on' 이 --name 없이 찾도록).
+# 비밀값이 아니고, 없어도 동작에는 지장이 없다.
+vb_remember() {
+	mkdir -p "$(dirname "$MODE_STATE")" 2>/dev/null || return 0
+	printf 'name=%s\n' "$1" > "$MODE_STATE" 2>/dev/null || true
+	return 0
+}
+
+# vb_rewrite <name> <on|off>  -> 새 crypttab 을 stdout 으로
+# 1~3번 칸은 원본 그대로 두고 4번 칸(옵션)만 바꾼다. 다른 줄은 손대지 않는다.
+# 대상 줄을 찾지 못하면 0 이 아닌 값으로 끝난다.
+vb_rewrite() {
+	awk -v n="$1" -v want="$2" -v ks="keyscript=$KEYSCRIPT" '
+	function strip(o) {
+		c = split(o, a, ",")
+		out = ""
+		for (i = 1; i <= c; i++) {
+			if (a[i] ~ /^keyscript=/) continue
+			if (a[i] == "") continue
+			out = (out == "" ? a[i] : out "," a[i])
+		}
+		return out
+	}
+	!/^[ \t]*#/ && $1 == n && !done {
+		opts = (NF >= 4 ? strip($4) : "")
+		if (want == "on")
+			opts = (opts == "" ? ks : opts "," ks)
+		if (NF >= 4) {
+			# 원본의 1~3번 칸과 그 뒤 공백을 그대로 보존한다
+			match($0, /^[ \t]*[^ \t]+[ \t]+[^ \t]+[ \t]+[^ \t]+[ \t]+/)
+			head = substr($0, 1, RLENGTH)
+		} else if (NF == 3) {
+			head = $0 "\t"
+		} else {
+			# 3번 칸(키)이 생략된 줄. 'none' 을 채워 넣는다
+			head = $0 "\tnone\t"
+		}
+		if (opts == "")
+			opts = "luks"
+		print head opts
+		done = 1
+		next
+	}
+	{ print }
+	END { exit !done }' "$CRYPTTAB"
+}
+
+# ---------------------------------------------------------------------------
+# LUKS 쪽 조회
+# ---------------------------------------------------------------------------
+
+# vb_resolve_source <crypttab의 2번 칸>  -> 실제 장치 경로
+vb_resolve_source() {
+	case $1 in
+	UUID=*) printf '/dev/disk/by-uuid/%s' "${1#UUID=}" ;;
+	PARTUUID=*) printf '/dev/disk/by-partuuid/%s' "${1#PARTUUID=}" ;;
+	LABEL=*) printf '/dev/disk/by-label/%s' "${1#LABEL=}" ;;
+	PARTLABEL=*) printf '/dev/disk/by-partlabel/%s' "${1#PARTLABEL=}" ;;
+	*) printf '%s' "$1" ;;
+	esac
+}
+
+# vb_keyslots <device>  -> 사용 중인 키슬롯 번호들 (LUKS1/LUKS2 양쪽)
+vb_keyslots() {
+	"$CRYPTSETUP" luksDump -- "$1" 2>/dev/null | awk '
+	/^Key Slot [0-9]+: ENABLED/ { print $3 + 0; next }          # LUKS1
+	/^Keyslots:/ { ks = 1; next }                                # LUKS2
+	ks && /^[ \t]+[0-9]+:/ { s = $1; sub(":", "", s); print s + 0; next }
+	ks && /^[^ \t]/ { ks = 0 }'
+}
+
+# vb_test_slot <device> [키파일]
+# 키파일을 주면 그것으로, 주지 않으면 cryptsetup 이 직접 패스프레이즈를
+# 물어보게 한다. 성공하면 열린 키슬롯 번호를 stdout 으로 (번호를 못 읽으면
+# 빈 문자열), 실패하면 0 이 아닌 값으로 끝난다.
+vb_test_slot() {
+	_dev=$1
+	if [ $# -ge 2 ]; then
+		"$CRYPTSETUP" --verbose luksOpen --test-passphrase \
+			--key-file="$2" -- "$_dev" > "$WORK/slot.out" 2>&1 || return 1
+	else
+		# stdin 을 가로채지 않는다. 사용자의 터미널에서 직접 입력받는다.
+		"$CRYPTSETUP" --verbose luksOpen --test-passphrase -- "$_dev" \
+			> "$WORK/slot.out" 2>&1 || return 1
+	fi
+	sed -n 's/^[Kk]ey slot \([0-9][0-9]*\) unlocked\..*/\1/p' "$WORK/slot.out" \
+		| head -n 1
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# 토큰에서 암호문 뽑기
+# ---------------------------------------------------------------------------
+
+# vb_pick_token  -> 토큰 장치 경로
+vb_pick_token() {
+	if [ -n "$TOKEN" ]; then
+		printf '%s' "$TOKEN"
+		return 0
+	fi
+	[ -x "$TOKEN_TOOL" ] || die "$TOKEN_TOOL 가 없습니다. --token 으로 직접 지정하세요"
+	_t=$("$TOKEN_TOOL" scan 2>/dev/null | awk 'NR == 1 { print $1 }')
+	[ -n "$_t" ] || die "연결된 VIVE 토큰을 찾지 못했습니다. 디스켓을 넣고 다시 하거나 --token 을 쓰세요"
+	printf '%s' "$_t"
+}
+
+# vb_token_key <토큰장치>  -> 64자 암호문을 $WORK/token.key 에 쓴다
+#
+# 부팅 때 실제로 도는 키스크립트를 그대로 돌린다. 파이썬 쪽 derive 를 쓰면
+# openssl/PBKDF2 경로를 검증하지 못한다.
+# SEQ_UPDATE=no 로 돌려 '검증 때문에' 부팅 카운터가 올라가는 일을 막는다
+# (올라가면 다음 부팅에 seqcheck 가 복제 경고를 내고, SEQ_POLICY=poweroff
+#  라면 전원을 끈다).
+vb_token_key() {
+	[ -x "$KEYSCRIPT" ] || die "$KEYSCRIPT 를 찾을 수 없습니다 (install.sh 를 먼저 실행하세요)"
+	_pp="VIVE 토큰 PIN: "
+	if [ -r "$VB_CONF" ]; then
+		_pp=$(sed -n 's/^[ 	]*PIN_PROMPT=//p' "$VB_CONF" | tail -n 1 \
+			| sed 's/^"//; s/"$//')
+		[ -n "$_pp" ] || _pp="VIVE 토큰 PIN: "
+	fi
+	mkdir -p "$WORK/run"
+	chmod 700 "$WORK/run"
+	{
+		printf 'TOKEN_DEVICE="%s"\n' "$1"
+		printf 'TOKEN_WAIT=10\n'
+		printf 'SEQ_UPDATE=no\n'
+		printf 'CACHE_IKM=no\n'
+		printf 'BYPASS_CMDLINE=no\n'
+		printf 'PIN_PROMPT="%s"\n' "$_pp"
+	} > "$WORK/conf"
+	( umask 077 && : > "$WORK/token.key" )
+	if [ "$HAVE_PIN" = yes ]; then
+		VIVEBOOT_CONF="$WORK/conf" VIVEBOOT_RUN="$WORK/run" \
+			VIVEBOOT_CMDLINE=/dev/null VIVEBOOT_PIN="$PIN" \
+			sh "$KEYSCRIPT" none > "$WORK/token.key" || return 1
+	else
+		VIVEBOOT_CONF="$WORK/conf" VIVEBOOT_RUN="$WORK/run" \
+			VIVEBOOT_CMDLINE=/dev/null \
+			sh "$KEYSCRIPT" none > "$WORK/token.key" || return 1
+	fi
+	[ "$(wc -c < "$WORK/token.key")" = 64 ] || return 1
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# crypttab 쓰기 (백업 -> 교체 -> initramfs. 실패하면 되돌린다)
+# ---------------------------------------------------------------------------
+
+vb_restore() {
+	[ -f "$BACKUP" ] || return 0
+	cp -a "$BACKUP" "$CRYPTTAB.restore.$$" 2>/dev/null \
+		&& mv "$CRYPTTAB.restore.$$" "$CRYPTTAB" \
+		&& log "$CRYPTTAB 를 원래대로 되돌렸습니다"
+}
+
+# vb_apply <name> <on|off>
+vb_apply() {
+	_name=$1
+	_want=$2
+	cp -a "$CRYPTTAB" "$BACKUP" || die "$BACKUP 에 백업할 수 없습니다"
+	log "백업: $BACKUP"
+	# 먼저 cp -a 로 권한/소유자를 물려받은 뒤 내용만 덮어쓴다.
+	cp -a "$CRYPTTAB" "$CRYPTTAB.new" || die "$CRYPTTAB.new 를 만들 수 없습니다"
+	vb_rewrite "$_name" "$_want" > "$CRYPTTAB.new" \
+		|| { rm -f "$CRYPTTAB.new"; die "$CRYPTTAB 에서 '$_name' 항목을 찾지 못했습니다"; }
+	mv "$CRYPTTAB.new" "$CRYPTTAB"
+	_now=$(vb_mode_of "$_name")
+	[ "$_now" = "$_want" ] || {
+		vb_restore
+		die "crypttab 을 고쳤지만 모드가 '$_now' 입니다. 되돌렸습니다"
+	}
+	log "$CRYPTTAB: '$_name' -> $_want"
+	# 대상 기억은 호출자(cmd_on/cmd_off)가 이미 했다 - 변경이 없는 경우까지
+	# 덮으려면 모드 판정 직후여야 하므로 여기서 다시 쓰지 않는다.
+
+	if [ "$DO_INITRAMFS" = no ]; then
+		warn "update-initramfs 를 실행하지 않았습니다. 다음 부팅까지 반영되지 않습니다"
+		warn "직접 실행하세요: sudo update-initramfs -u -k all"
+		return 0
+	fi
+	command -v "$UPDATE_INITRAMFS" >/dev/null 2>&1 \
+		|| { vb_restore; die "$UPDATE_INITRAMFS 가 없습니다. 되돌렸습니다"; }
+	log "initramfs 를 다시 만듭니다 ($UPDATE_INITRAMFS -u -k all)"
+	if ! "$UPDATE_INITRAMFS" -u -k all; then
+		warn "update-initramfs 가 실패했습니다. crypttab 을 되돌리고 다시 만듭니다"
+		vb_restore
+		"$UPDATE_INITRAMFS" -u -k all || warn "되돌린 뒤의 재생성도 실패했습니다"
+		die "initramfs 재생성 실패. 재부팅하지 말고 원인을 먼저 해결하세요"
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# 인자
+# ---------------------------------------------------------------------------
+
+CMD=${1:-}
+[ -n "$CMD" ] || usage
+case $CMD in
+on | off | status | bypass) shift ;;
+-h | --help) usage ;;
+*) die "알 수 없는 명령: $CMD (on | off | status | bypass)" ;;
+esac
+
+NAME=""
+CRYPTDEV=""
+TOKEN=""
+PIN=""
+HAVE_PIN=no
+FORCE=no
+DO_INITRAMFS=yes
+VERIFY=no
+BYPASS_ARG=""
+
+while [ $# -gt 0 ]; do
+	case $1 in
+	--name) NAME=${2:?}; shift 2 ;;
+	--crypt-device) CRYPTDEV=${2:?}; shift 2 ;;
+	--token) TOKEN=${2:?}; shift 2 ;;
+	--pin) PIN=${2:?}; HAVE_PIN=yes; shift 2 ;;
+	--force) FORCE=yes; shift ;;
+	--no-initramfs) DO_INITRAMFS=no; shift ;;
+	--verify) VERIFY=yes; shift ;;
+	-h | --help) usage ;;
+	on | off)
+		[ "$CMD" = bypass ] || die "알 수 없는 인자: $1"
+		BYPASS_ARG=$1
+		shift
+		;;
+	*) die "알 수 없는 인자: $1" ;;
+	esac
+done
+
+[ -r "$CRYPTTAB" ] || die "$CRYPTTAB 를 읽을 수 없습니다"
+
+WORK=""
+cleanup() {
+	[ -n "$WORK" ] || return 0
+	if [ -f "$WORK/token.key" ]; then
+		dd if=/dev/urandom of="$WORK/token.key" bs=64 count=1 conv=notrunc \
+			2>/dev/null || true
+	fi
+	rm -rf "$WORK"
+}
+trap cleanup EXIT HUP INT TERM
+
+vb_workdir() {
+	[ -n "$WORK" ] && return 0
+	WORK=$(mktemp -d "$TMPBASE/vive-boot-mode.XXXXXX") \
+		|| die "$TMPBASE 에 임시 디렉토리를 만들 수 없습니다"
+	chmod 700 "$WORK"
+}
+
+# ---------------------------------------------------------------------------
+# bypass - 다음 부팅 한 번만 우회
+# ---------------------------------------------------------------------------
+
+cmd_bypass() {
+	[ -n "$BYPASS_ARG" ] || die "bypass 뒤에 on 또는 off 를 쓰세요"
+	[ -f "$BOOT_CMDLINE" ] || die "$BOOT_CMDLINE 가 없습니다"
+	[ -w "$BOOT_CMDLINE" ] || die "$BOOT_CMDLINE 에 쓸 수 없습니다 (root 권한이 필요합니다)"
+	read -r _cl < "$BOOT_CMDLINE" || die "$BOOT_CMDLINE 를 읽을 수 없습니다"
+	_new=""
+	_had=no
+	for _w in $_cl; do
+		if [ "$_w" = "viveboot=off" ]; then
+			_had=yes
+			continue
+		fi
+		_new="${_new:+$_new }$_w"
+	done
+	if [ "$BYPASS_ARG" = on ]; then
+		_new="${_new:+$_new }viveboot=off"
+	fi
+	cp -a "$BOOT_CMDLINE" "$BOOT_CMDLINE.vive-boot-mode.bak"
+	printf '%s\n' "$_new" > "$BOOT_CMDLINE.new"
+	mv "$BOOT_CMDLINE.new" "$BOOT_CMDLINE"
+	if [ "$BYPASS_ARG" = on ]; then
+		log "다음 부팅은 토큰을 건너뛰고 패스프레이즈를 묻습니다"
+		log "들어간 뒤 반드시 되돌리세요: sudo vive-boot-mode bypass off"
+		log "(viveboot.conf 의 BYPASS_CMDLINE=no 이면 이 값은 무시됩니다)"
+	elif [ "$_had" = yes ]; then
+		log "우회를 해제했습니다. 다음 부팅은 다시 토큰을 요구합니다"
+	else
+		log "우회가 걸려 있지 않았습니다 (변경 없음)"
+	fi
+	log "백업: $BOOT_CMDLINE.vive-boot-mode.bak"
+}
+
+# ---------------------------------------------------------------------------
+# on
+# ---------------------------------------------------------------------------
+
+cmd_on() {
+	[ -n "$NAME" ] || NAME=$(vb_pick_name)
+	_mode=$(vb_mode_of "$NAME")
+	case $_mode in
+	none) die "$CRYPTTAB 에 '$NAME' 항목이 없습니다" ;;
+	other) die "'$NAME' 에 다른 keyscript 가 걸려 있습니다: $(vb_keyscript_of "$NAME")" ;;
+	esac
+
+	# 대상이 우리 것으로 확인됐으면 여기서 기억한다. 이미 원하는 모드여서
+	# 아무것도 바꾸지 않는 경우에도 기억해야, 다음 반대 방향 명령이 --name
+	# 없이 같은 항목을 찾는다 (vb_pick_name 2번 규칙).
+	vb_remember "$NAME"
+
+	if [ "$_mode" = on ]; then
+		log "'$NAME' 은 이미 켜져 있습니다 (변경 없음)"
+		log "initramfs 반영이 의심되면: sudo vive-boot-mode status"
+		return 0
+	fi
+
+	[ -w "$CRYPTTAB" ] || die "$CRYPTTAB 에 쓸 수 없습니다 (root 권한이 필요합니다)"
+	_src=$(vb_field "$NAME" 2)
+	_opts=$(vb_field "$NAME" 4)
+	case ",$_opts," in
+	*,initramfs,*) ;;
+	*) warn "'$NAME' 에 initramfs 옵션이 없습니다. 루트가 아니면 부팅 때 해제되지 않습니다" ;;
+	esac
+
+	if [ "$FORCE" = yes ]; then
+		warn "--force: 토큰이 LUKS 를 여는지 확인하지 않습니다"
+		warn "         다음 부팅에서 못 들어갈 수 있습니다. 반드시 복구 수단을 준비하세요"
+	else
+		command -v "$CRYPTSETUP" >/dev/null 2>&1 || die "cryptsetup 이 필요합니다"
+		[ -n "$CRYPTDEV" ] || CRYPTDEV=$(vb_resolve_source "$_src")
+		[ -e "$CRYPTDEV" ] || die "$CRYPTDEV 를 찾을 수 없습니다 (--crypt-device 로 지정하세요)"
+		[ -r "$CRYPTDEV" ] \
+			|| die "$CRYPTDEV 를 읽을 수 없습니다 (root 권한이 필요합니다. 검증을 건너뛰려면 --force)"
+		"$CRYPTSETUP" isLuks -- "$CRYPTDEV" || die "$CRYPTDEV 는 LUKS 장치가 아닙니다"
+
+		vb_workdir
+		_tok=$(vb_pick_token)
+		log "토큰: $_tok"
+		log "토큰에서 암호문을 파생합니다 (부팅 때와 같은 키스크립트, 카운터는 올리지 않음)"
+		vb_token_key "$_tok" || die "토큰에서 암호문을 파생하지 못했습니다. 켜지 않았습니다"
+
+		log "그 암호문이 $CRYPTDEV 를 여는지 확인합니다"
+		_tslot=$(vb_test_slot "$CRYPTDEV" "$WORK/token.key") || {
+			warn "토큰 암호문으로 $CRYPTDEV 가 열리지 않습니다"
+			warn "키슬롯이 등록되지 않았습니다. 먼저:"
+			warn "  sudo vive-luks-enroll --token $_tok --crypt-device $CRYPTDEV"
+			die "켜지 않았습니다 (crypttab 은 그대로입니다)"
+		}
+		log "토큰이 키슬롯 ${_tslot:-?} 을 엽니다"
+
+		_slots=$(vb_keyslots "$CRYPTDEV" | tr '\n' ' ')
+		_nslots=$(printf '%s' "$_slots" | wc -w)
+		if [ "$_nslots" -le 1 ]; then
+			warn "키슬롯이 $_nslots 개뿐입니다 ($_slots)"
+			warn "토큰 외의 복구 수단이 없습니다. 토큰을 잃으면 데이터도 잃습니다"
+			die "패스프레이즈 키슬롯을 먼저 만드세요: sudo cryptsetup luksAddKey $CRYPTDEV"
+		fi
+		log "키슬롯 $_nslots 개 ($_slots) - 복구 경로가 남아 있습니다"
+	fi
+
+	vb_apply "$NAME" on
+	if [ "$DO_INITRAMFS" = yes ]; then
+		vb_check_initramfs_has_keyscript || true
+	fi
+	cat >&2 <<EOF
+
+$VB_TAG: '$NAME' 을 켰습니다. 다음 부팅에는 토큰 플로피가 있어야 합니다.
+
+재부팅 전에:
+  1) 디스켓을 USB 드라이브에 넣어 둔다
+  2) sudo vive-boot-mode status   로 initramfs 반영을 확인한다
+  3) 못 들어갈 때의 길을 외운다:
+       - 패스프레이즈로 한 번만 부팅: sudo vive-boot-mode bypass on 뒤 재부팅
+       - initramfs 쉘에서: cryptsetup open ${CRYPTDEV:-<LUKS파티션>} $NAME
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# off
+# ---------------------------------------------------------------------------
+
+cmd_off() {
+	[ -n "$NAME" ] || NAME=$(vb_pick_name)
+	_mode=$(vb_mode_of "$NAME")
+	case $_mode in
+	none) die "$CRYPTTAB 에 '$NAME' 항목이 없습니다" ;;
+	other) die "'$NAME' 에 다른 keyscript 가 걸려 있습니다: $(vb_keyscript_of "$NAME")" ;;
+	esac
+
+	# cmd_on 과 같은 이유로 여기서 기억한다 (변경이 없어도).
+	vb_remember "$NAME"
+
+	if [ "$_mode" = off ]; then
+		log "'$NAME' 은 이미 꺼져 있습니다 (변경 없음)"
+		return 0
+	fi
+
+	[ -w "$CRYPTTAB" ] || die "$CRYPTTAB 에 쓸 수 없습니다 (root 권한이 필요합니다)"
+	_src=$(vb_field "$NAME" 2)
+
+	if [ "$FORCE" = yes ]; then
+		warn "--force: 패스프레이즈 키슬롯이 있는지 확인하지 않습니다"
+		warn "         없으면 다음 부팅에서 루트를 열 방법이 없습니다"
+	else
+		command -v "$CRYPTSETUP" >/dev/null 2>&1 || die "cryptsetup 이 필요합니다"
+		[ -n "$CRYPTDEV" ] || CRYPTDEV=$(vb_resolve_source "$_src")
+		[ -e "$CRYPTDEV" ] || die "$CRYPTDEV 를 찾을 수 없습니다 (--crypt-device 로 지정하세요)"
+		[ -r "$CRYPTDEV" ] \
+			|| die "$CRYPTDEV 를 읽을 수 없습니다 (root 권한이 필요합니다. 검증을 건너뛰려면 --force)"
+		"$CRYPTSETUP" isLuks -- "$CRYPTDEV" || die "$CRYPTDEV 는 LUKS 장치가 아닙니다"
+		vb_workdir
+
+		# 토큰 슬롯을 먼저 알아 둔다. 토큰이 없어도 끌 수 있어야 하므로
+		# (토큰을 잃은 상황이 off 의 주된 용도다) 실패해도 진행한다.
+		_tslot=""
+		if [ -n "$TOKEN" ] || { [ -x "$TOKEN_TOOL" ] && "$TOKEN_TOOL" scan >/dev/null 2>&1; }; then
+			_tok=$(vb_pick_token 2>/dev/null) || _tok=""
+			if [ -n "$_tok" ] && vb_token_key "$_tok" 2>/dev/null; then
+				_tslot=$(vb_test_slot "$CRYPTDEV" "$WORK/token.key") || _tslot=""
+				[ -n "$_tslot" ] && log "토큰이 여는 키슬롯: $_tslot"
+			fi
+		fi
+		[ -n "$_tslot" ] || warn "토큰 슬롯을 알아내지 못했습니다 (토큰 없음/PIN 생략). 슬롯 비교를 건너뜁니다"
+
+		log "복구용 패스프레이즈를 확인합니다. $CRYPTDEV 의 패스프레이즈를 입력하세요."
+		log "(이 값이 통하지 않으면 끄지 않습니다. 끈 뒤에 못 들어가는 것을 막기 위함입니다)"
+		_pslot=$(vb_test_slot "$CRYPTDEV") || {
+			warn "그 패스프레이즈로는 $CRYPTDEV 가 열리지 않습니다"
+			die "끄지 않았습니다. 복구용 패스프레이즈를 먼저 확인하세요 (docs/recovery.md)"
+		}
+		log "패스프레이즈가 키슬롯 ${_pslot:-?} 을 엽니다"
+		if [ -n "$_tslot" ] && [ -n "$_pslot" ] && [ "$_tslot" = "$_pslot" ]; then
+			warn "입력한 값이 토큰 슬롯($_tslot)과 같은 슬롯을 엽니다"
+			warn "즉 토큰에서 파생된 암호문을 넣었습니다. 사람이 아는 패스프레이즈가 아닙니다"
+			die "끄지 않았습니다. 별도의 패스프레이즈 키슬롯을 먼저 만드세요: cryptsetup luksAddKey $CRYPTDEV"
+		fi
+	fi
+
+	vb_apply "$NAME" off
+	cat >&2 <<EOF
+
+$VB_TAG: '$NAME' 을 껐습니다. 다음 부팅은 패스프레이즈를 묻습니다.
+
+- 토큰 키슬롯은 LUKS 안에 그대로 있습니다. 제거된 것이 아닙니다.
+- 다시 켜려면: sudo vive-boot-mode on
+- 키슬롯까지 지우려면: sudo vive-luks-enroll --remove --token <토큰> --crypt-device ${CRYPTDEV:-<LUKS파티션>}
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+# vb_initrd  -> 검사할 initrd 경로 (없으면 빈 문자열)
+vb_initrd() {
+	if [ -n "${VIVEBOOT_INITRD:-}" ]; then
+		printf '%s' "$VIVEBOOT_INITRD"
+		return 0
+	fi
+	_kr=$(uname -r 2>/dev/null || true)
+	for _p in "/boot/initrd.img-$_kr" "/boot/initramfs-$_kr.img" \
+		"/boot/initrd.img" "/boot/firmware/initramfs8" \
+		"/boot/firmware/initramfs_2712"; do
+		[ -f "$_p" ] && { printf '%s' "$_p"; return 0; }
+	done
+	return 1
+}
+
+vb_check_initramfs_has_keyscript() {
+	_ird=$(vb_initrd) || { warn "initrd 파일을 찾지 못해 확인하지 못했습니다"; return 1; }
+	command -v "$LSINITRAMFS" >/dev/null 2>&1 || return 1
+	if "$LSINITRAMFS" "$_ird" 2>/dev/null | grep -q 'viveboot-keyscript'; then
+		log "확인: $_ird 안에 키스크립트가 있습니다"
+		return 0
+	fi
+	warn "$_ird 안에 viveboot-keyscript 가 없습니다!"
+	warn "이 상태로 켜 두면 cryptsetup 이 항목을 건너뛰고 패스프레이즈도 묻지 않습니다"
+	warn "initramfs/hooks/viveboot 설치와 update-initramfs 를 확인하세요"
+	return 1
+}
+
+cmd_status() {
+	_target=$NAME
+	[ -n "$_target" ] || _target=$(vb_pick_name 2>/dev/null) || _target=""
+	_mode=none
+	[ -n "$_target" ] && _mode=$(vb_mode_of "$_target")
+
+	printf '%s\n' "== viveboot 부팅 모드 =="
+	case $_mode in
+	on) printf '모드          : on  - 토큰 플로피가 있어야 루트가 열린다\n' ;;
+	off) printf '모드          : off - LUKS 패스프레이즈로 루트를 연다\n' ;;
+	other) printf '모드          : 다른 keyscript (%s)\n' "$(vb_keyscript_of "$_target")" ;;
+	*) printf '모드          : 미설정 - crypttab 에 대상 항목이 없다\n' ;;
+	esac
+	[ -n "$_target" ] && printf '대상 매핑     : %s\n' "$_target"
+
+	printf '\n-- crypttab (%s) --\n' "$CRYPTTAB"
+	vb_names | while IFS= read -r _n; do
+		printf '  %-12s %-28s %s\n' "$_n" "$(vb_field "$_n" 2)" "$(vb_field "$_n" 4)"
+		_k=$(vb_keyscript_of "$_n")
+		if [ -z "$_k" ]; then
+			printf '  %-12s   -> keyscript 없음 (패스프레이즈)\n' ""
+		elif [ "$_k" = "$KEYSCRIPT" ]; then
+			printf '  %-12s   -> viveboot keyscript (토큰 필수)\n' ""
+		else
+			printf '  %-12s   -> 다른 keyscript: %s\n' "" "$_k"
+		fi
+	done
+
+	printf '\n-- LUKS --\n'
+	_dev=$CRYPTDEV
+	[ -n "$_dev" ] || { [ -n "$_target" ] && _dev=$(vb_resolve_source "$(vb_field "$_target" 2)"); }
+	if [ -z "$_dev" ]; then
+		printf '  장치        : 알 수 없음\n'
+	elif [ ! -e "$_dev" ]; then
+		printf '  장치        : %s (지금은 없음)\n' "$_dev"
+	elif [ ! -r "$_dev" ]; then
+		printf '  장치        : %s (키슬롯 조회에는 root 권한이 필요)\n' "$_dev"
+	else
+		printf '  장치        : %s\n' "$_dev"
+		_slots=$(vb_keyslots "$_dev" | tr '\n' ' ')
+		_nslots=$(printf '%s' "$_slots" | wc -w)
+		printf '  키슬롯      : %s개 [%s]\n' "$_nslots" "${_slots% }"
+		if [ "$_nslots" -ge 2 ]; then
+			printf '  복구 경로   : 토큰 외의 슬롯이 있다 (패스프레이즈로 추정)\n'
+		else
+			printf '  복구 경로   : 슬롯이 %s개뿐 - 복구 수단이 없을 수 있다!\n' "$_nslots"
+		fi
+		printf '  실제 확인   : sudo cryptsetup luksOpen --test-passphrase %s\n' "$_dev"
+	fi
+
+	printf '\n-- initramfs --\n'
+	if _ird=$(vb_initrd); then
+		printf '  이미지      : %s\n' "$_ird"
+		if command -v "$LSINITRAMFS" >/dev/null 2>&1 \
+			&& _ls=$("$LSINITRAMFS" "$_ird" 2>/dev/null); then
+			for _want in viveboot-keyscript viveboot-common.sh \
+				viveboot/viveboot.conf bin/openssl cryptsetup/askpass; do
+				if printf '%s\n' "$_ls" | grep -q -- "$_want"; then
+					printf '  %-26s: 있음\n' "$_want"
+				else
+					printf '  %-26s: 없음\n' "$_want"
+				fi
+			done
+			printf '  (askpass 는 off 모드와 우회 모드에서 패스프레이즈를 묻는 데 쓴다)\n'
+		else
+			printf '  내용 확인   : lsinitramfs 를 쓸 수 없어 생략\n'
+		fi
+		if [ -n "$(find "$CRYPTTAB" -newer "$_ird" 2>/dev/null)" ] \
+			|| { [ -r "$VB_CONF" ] \
+				&& [ -n "$(find "$VB_CONF" -newer "$_ird" 2>/dev/null)" ]; }; then
+			printf '  최신 여부   : crypttab/conf 가 더 새롭다 -> update-initramfs -u -k all 필요!\n'
+		else
+			printf '  최신 여부   : crypttab/conf 보다 새롭다 (반영됨)\n'
+		fi
+	else
+		printf '  이미지      : 찾지 못했다 (VIVEBOOT_INITRD 로 지정 가능)\n'
+	fi
+
+	printf '\n-- 토큰 --\n'
+	_tok=$TOKEN
+	if [ -z "$_tok" ] && [ -x "$TOKEN_TOOL" ]; then
+		_tok=$("$TOKEN_TOOL" scan 2>/dev/null | awk 'NR == 1 { print $1 }') || _tok=""
+	fi
+	if [ -z "$_tok" ]; then
+		printf '  연결        : 없음 (디스켓이 꽂혀 있지 않거나 드라이브가 없다)\n'
+	else
+		printf '  연결        : %s\n' "$_tok"
+		if [ -x "$TOKEN_TOOL" ]; then
+			"$TOKEN_TOOL" info "$_tok" 2>/dev/null \
+				| awk -F: '/라벨|토큰 UUID|PIN 필요|부팅 카운터/ {
+					sub(/^[ \t]+/, "", $2); printf "  %-12s: %s\n", $1, $2 }' \
+				|| printf '  헤더        : 읽을 수 없다\n'
+		fi
+		if [ "$VERIFY" = yes ]; then
+			if [ -z "$_dev" ] || [ ! -r "$_dev" ]; then
+				printf '  LUKS 검증   : 건너뜀 (root 권한과 LUKS 장치가 필요)\n'
+			else
+				vb_workdir
+				if vb_token_key "$_tok" && _vs=$(vb_test_slot "$_dev" "$WORK/token.key"); then
+					printf '  LUKS 검증   : 통과 - 키슬롯 %s 을 연다\n' "${_vs:-?}"
+				else
+					printf '  LUKS 검증   : 실패! 이 토큰으로는 열리지 않는다\n'
+				fi
+			fi
+		else
+			printf '  LUKS 검증   : 생략 (--verify 로 실제 해제까지 확인)\n'
+		fi
+	fi
+
+	printf '\n-- 부팅 카운터 --\n'
+	if [ -r "$SEQ_STATE" ]; then
+		awk -F= '$1 == "seq" { s = $2 } $1 == "token_uuid" { u = $2 }
+			END { printf "  기록 (%s): seq=%s uuid=%s\n", FILENAME, s, u }' "$SEQ_STATE"
+	else
+		printf '  기록        : %s 없음 (아직 토큰으로 부팅한 적이 없다)\n' "$SEQ_STATE"
+	fi
+	if [ -r "$VB_RUN/boot-seq" ]; then
+		awk -F= '$1 == "seq_seen" { a = $2 } $1 == "seq_written" { b = $2 }
+			END { printf "  이번 부팅   : seq %s -> %s\n", a, b }' "$VB_RUN/boot-seq"
+	else
+		printf '  이번 부팅   : 토큰 기록 없음 (패스프레이즈로 부팅했거나 off 모드)\n'
+	fi
+	printf '  토큰 실측   : sudo vive-floppy-token seq show <토큰> (PIN 이 필요하다)\n'
+
+	printf '\n-- 한 번만 우회 (viveboot=off) --\n'
+	if vb_cmdline_word viveboot=off "$VB_CMDLINE" 2>/dev/null; then
+		printf '  이번 부팅   : 우회됨 (토큰을 묻지 않았다)\n'
+	else
+		printf '  이번 부팅   : 우회 없음\n'
+	fi
+	if [ -r "$BOOT_CMDLINE" ]; then
+		if vb_cmdline_word viveboot=off "$BOOT_CMDLINE"; then
+			printf '  다음 부팅   : %s 에 viveboot=off 가 있다 -> 우회된다!\n' "$BOOT_CMDLINE"
+			printf '                되돌리기: sudo vive-boot-mode bypass off\n'
+		else
+			printf '  다음 부팅   : 우회 없음 (%s)\n' "$BOOT_CMDLINE"
+		fi
+	fi
+	if [ -r "$VB_CONF" ] && grep -qE '^[[:space:]]*BYPASS_CMDLINE=no' "$VB_CONF"; then
+		printf '  설정        : BYPASS_CMDLINE=no - 우회가 꺼져 있다\n'
+	fi
+}
+
+# ---------------------------------------------------------------------------
+
+case $CMD in
+on) cmd_on ;;
+off) cmd_off ;;
+status) cmd_status ;;
+bypass) cmd_bypass ;;
+esac

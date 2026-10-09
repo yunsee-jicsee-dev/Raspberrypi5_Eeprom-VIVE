@@ -33,7 +33,18 @@ if [ -r /etc/ssl/openssl.cnf ]; then
 	cp -a /etc/ssl/openssl.cnf "$DESTDIR/etc/ssl/"
 fi
 
-# 4) USB 플로피 드라이브는 usb-storage(UFI) 로 /dev/sdX 로 올라온다.
+# 4) askpass - 우회 경로(viveboot=off)와 PIN 입력이 쓴다.
+# 보통 cryptroot 훅이 이미 넣어 주지만(PREREQ 로 먼저 돌게 해 두었다),
+# cryptsetup 설정에서 ASKPASS=n 으로 끈 경우에는 빠진다. 그러면 토큰을
+# 잃었을 때의 1순위 복구 경로가 조용히 사라지므로 직접 보장한다.
+for ap in /lib/cryptsetup/askpass /usr/lib/cryptsetup/askpass; do
+	if [ -x "$ap" ]; then
+		copy_exec "$ap" "$(dirname "$ap")"
+		break
+	fi
+done
+
+# 5) USB 플로피 드라이브는 usb-storage(UFI) 로 /dev/sdX 로 올라온다.
 for mod in usb_storage uas sd_mod xhci_pci xhci_pci_renesas; do
 	manual_add_modules "$mod" 2>/dev/null || true
 done

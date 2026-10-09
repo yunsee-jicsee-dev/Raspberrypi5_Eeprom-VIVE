@@ -280,6 +280,43 @@ vb_find_token() {
 }
 
 # ---------------------------------------------------------------------------
+# askpass 와 커널 커맨드라인
+# ---------------------------------------------------------------------------
+
+# vb_askpass_path  -> stdout 에 askpass 경로. 없으면 1.
+# cryptsetup 패키지가 /lib/cryptsetup/askpass 에 둔다 (usrmerge 환경에서는
+# /usr/lib/cryptsetup/askpass). initramfs 에는 cryptroot 훅이 넣어 준다
+# (ASKPASS=n 으로 끈 경우에만 빠진다).
+# VIVEBOOT_ASKPASS 로 경로를 못박을 수 있다 (테스트와 비표준 설치용).
+vb_askpass_path() {
+	if [ -n "${VIVEBOOT_ASKPASS:-}" ]; then
+		[ -x "$VIVEBOOT_ASKPASS" ] || return 1
+		printf '%s' "$VIVEBOOT_ASKPASS"
+		return 0
+	fi
+	for _vb_ap in /lib/cryptsetup/askpass /usr/lib/cryptsetup/askpass; do
+		if [ -x "$_vb_ap" ]; then
+			printf '%s' "$_vb_ap"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# vb_cmdline_word <단어> [cmdline파일]
+# 커널 커맨드라인에 <단어> 가 한 토큰으로 들어 있으면 0.
+# 'viveboot=offx' 나 'noviveboot=off' 처럼 비슷한 것에는 걸리지 않는다.
+vb_cmdline_word() {
+	_vb_clf=${2:-/proc/cmdline}
+	[ -r "$_vb_clf" ] || return 1
+	read -r _vb_cl < "$_vb_clf" || return 1
+	for _vb_w in $_vb_cl; do
+		[ "$_vb_w" = "$1" ] && return 0
+	done
+	return 1
+}
+
+# ---------------------------------------------------------------------------
 # PIN 입력
 # ---------------------------------------------------------------------------
 
@@ -291,8 +328,8 @@ vb_ask_pin() {
 		printf '%s' "$VIVEBOOT_PIN"
 		return 0
 	fi
-	if [ -x /lib/cryptsetup/askpass ]; then
-		/lib/cryptsetup/askpass "$1"
+	if _vb_ap=$(vb_askpass_path); then
+		"$_vb_ap" "$1"
 		return $?
 	fi
 	_vb_tty=/dev/console
