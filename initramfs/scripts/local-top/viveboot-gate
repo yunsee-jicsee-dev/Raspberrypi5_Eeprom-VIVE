@@ -1,0 +1,116 @@
+#!/bin/sh
+# local-top/viveboot-gate - 암호화하지 않은 루트용 부팅 게이트.
+#
+# 루트를 마운트하기 전에 플로피 토큰을 확인한다. 맞는 토큰이 없으면 부팅을
+# 계속하지 않고 전원을 끈다.
+#
+# /etc/viveboot/gate 가 없으면 아무것도 하지 않는다 (= 게이트 꺼짐). 그
+# 파일은 'vive-boot-gate enable' 이 만들고 initramfs 안으로 복사된다.
+#
+# 키 파생은 LUKS 모드와 같은 viveboot-keyscript 를 그대로 돌린다. 여기서는
+# 그 출력(64자 암호문)의 HMAC 을 gate 파일의 검증값과 비교만 한다.
+#
+# 한계: 루트가 평문이므로 SSD 를 떼어 다른 기계에 꽂으면 내용이 보인다.
+# 이 게이트는 '이 기기를 켜서 쓰는 것' 을 막을 뿐이다 (docs/design.md).
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "${1:-}" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+VB_TAG="viveboot-gate"
+# 경로는 테스트에서만 덮어쓴다.
+VB_LIB=${VIVEBOOT_LIB:-/usr/lib/viveboot/viveboot-common.sh}
+VB_CONF=${VIVEBOOT_CONF:-/etc/viveboot/viveboot.conf}
+VB_GATE=${VIVEBOOT_GATE:-/etc/viveboot/gate}
+VB_CMDLINE=${VIVEBOOT_CMDLINE:-/proc/cmdline}
+KEYSCRIPT=${KEYSCRIPT:-/usr/lib/viveboot/viveboot-keyscript}
+
+# 게이트를 쓰지 않는 설치에서는 여기서 끝난다.
+[ -e "$VB_GATE" ] || exit 0
+
+BYPASS_CMDLINE=yes
+GATE_TRIES=3
+GATE_FAIL=poweroff
+
+# 부팅을 계속하지 않는다. 어떤 경우에도 이 함수에서 돌아가면 안 된다
+# (돌아가면 local-top 다음 단계 = 루트 마운트로 넘어간다).
+gate_fail() {
+	printf '%s: 맞는 부팅 토큰이 없어 부팅하지 않습니다.\n' "$VB_TAG" >&2
+	case $GATE_FAIL in
+	exit)
+		# 테스트 전용. 실제 부팅에서 쓰면 게이트가 무력해진다.
+		exit 1
+		;;
+	reboot)
+		printf '%s: 10초 뒤 재시작합니다.\n' "$VB_TAG" >&2
+		sleep 10
+		sync
+		reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
+		;;
+	*)
+		printf '%s: 10초 뒤 전원을 끕니다.\n' "$VB_TAG" >&2
+		sleep 10
+		sync
+		poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger
+		;;
+	esac
+	# 위가 모두 실패해도 부팅을 이어가지 않는다.
+	while :; do
+		sleep 3600
+	done
+}
+
+if [ ! -r "$VB_LIB" ] || [ ! -r "$KEYSCRIPT" ]; then
+	printf '%s: 오류: %s 또는 %s 가 initramfs 에 없습니다\n' \
+		"$VB_TAG" "$VB_LIB" "$KEYSCRIPT" >&2
+	gate_fail
+fi
+# shellcheck source=../../../lib/viveboot-common.sh
+. "$VB_LIB"
+# shellcheck source=../../../etc/viveboot.conf
+[ -r "$VB_CONF" ] && . "$VB_CONF"
+
+GATE_VERIFIER=$(sed -n 's/^verifier=//p' "$VB_GATE" 2>/dev/null)
+GATE_UUID=$(sed -n 's/^token_uuid=//p' "$VB_GATE" 2>/dev/null)
+if [ ${#GATE_VERIFIER} -ne 64 ]; then
+	vb_warn "$VB_GATE 가 손상되었습니다 (검증값 없음)"
+	gate_fail
+fi
+
+# --- 한 번만 우회 (viveboot=off) ---------------------------------------------
+# 디스켓을 잃었을 때의 문서화된 복구 길이다. BYPASS_CMDLINE=no 로 닫을 수
+# 있지만, cmdline.txt 를 고칠 수 있는 사람은 init=/bin/sh 나 break=top 으로
+# 어차피 이 스크립트를 건너뛴다. 평문 루트에서 이 게이트가 막는 것은 '켜서
+# 쓰는 것' 이지 부트 파티션에 손댈 수 있는 사람이 아니다.
+if [ "$BYPASS_CMDLINE" = yes ] && vb_cmdline_word viveboot=off "$VB_CMDLINE"; then
+	vb_warn "커널 커맨드라인에 viveboot=off - 토큰 확인을 건너뜁니다"
+	vb_warn "들어간 뒤 되돌리세요: sudo vive-boot-mode bypass off"
+	exit 0
+fi
+
+# --- 토큰 확인 ---------------------------------------------------------------
+vb_log "부팅 토큰을 확인합니다 (토큰 UUID ${GATE_UUID:-?})"
+try=1
+while [ "$try" -le "$GATE_TRIES" ]; do
+	# 키스크립트 자신의 우회 처리는 끈다 (위에서 이미 판단했다).
+	pp=$(VIVEBOOT_LIB="$VB_LIB" VIVEBOOT_CONF="$VB_CONF" \
+		VIVEBOOT_CMDLINE=/dev/null sh "$KEYSCRIPT" none) || pp=""
+	if [ ${#pp} -eq 64 ]; then
+		got=$(vb_hmac_hex "$pp" "viveboot-gate-v1")
+		pp=""
+		if [ "$got" = "$GATE_VERIFIER" ]; then
+			vb_log "토큰 확인됨 - 부팅을 계속합니다"
+			exit 0
+		fi
+		vb_warn "토큰을 읽었지만 이 기기의 토큰이 아니거나 PIN 이 틀렸습니다"
+	fi
+	vb_warn "토큰 확인 실패 ($try/$GATE_TRIES)"
+	try=$((try + 1))
+done
+
+gate_fail

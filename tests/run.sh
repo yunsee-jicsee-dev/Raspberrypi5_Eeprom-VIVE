@@ -13,16 +13,20 @@ sh "$ROOT/tests/test_crossimpl.sh" || rc=1
 printf '\n=== 부팅 모드 on/off 스위치 ===\n'
 sh "$ROOT/tests/test_bootmode.sh" || rc=1
 
+printf '\n=== 부팅 게이트 (암호화하지 않은 루트) ===\n'
+sh "$ROOT/tests/test_gate.sh" || rc=1
+
 printf '\n=== 쉘 문법 검사 ===\n'
 for f in "$ROOT"/install.sh "$ROOT"/uninstall.sh \
 	"$ROOT"/lib/viveboot-common.sh \
 	"$ROOT"/tools/vive-luks-enroll "$ROOT"/tools/viveboot-seqcheck \
-	"$ROOT"/tools/vive-boot-mode \
+	"$ROOT"/tools/vive-boot-mode "$ROOT"/tools/vive-boot-gate \
 	"$ROOT"/initramfs/hooks/viveboot \
+	"$ROOT"/initramfs/scripts/local-top/viveboot-gate \
 	"$ROOT"/initramfs/scripts/viveboot-keyscript \
 	"$ROOT"/initramfs/scripts/local-bottom/viveboot \
 	"$ROOT"/etc/viveboot.conf "$ROOT"/tests/test_crossimpl.sh \
-	"$ROOT"/tests/test_bootmode.sh; do
+	"$ROOT"/tests/test_bootmode.sh "$ROOT"/tests/test_gate.sh; do
 	if sh -n "$f"; then
 		printf 'ok   - %s\n' "${f#"$ROOT"/}"
 	else
@@ -38,7 +42,8 @@ if command -v shellcheck >/dev/null 2>&1; then
 	shellcheck -s sh --severity=warning "$ROOT"/lib/viveboot-common.sh \
 		"$ROOT"/initramfs/scripts/viveboot-keyscript \
 		"$ROOT"/tools/viveboot-seqcheck "$ROOT"/tools/vive-luks-enroll \
-		"$ROOT"/tools/vive-boot-mode \
+		"$ROOT"/tools/vive-boot-mode "$ROOT"/tools/vive-boot-gate \
+		"$ROOT"/initramfs/scripts/local-top/viveboot-gate \
 		"$ROOT"/install.sh "$ROOT"/uninstall.sh || rc=1
 elif [ "${VIVEBOOT_REQUIRE_SHELLCHECK:-0}" = 1 ]; then
 	# CI 는 이 값을 1 로 두어 '없으면 생략' 을 금지한다.

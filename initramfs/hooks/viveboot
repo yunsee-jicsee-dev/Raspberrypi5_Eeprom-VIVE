@@ -25,6 +25,10 @@ mkdir -p "$DESTDIR/etc/viveboot"
 if [ -r /etc/viveboot/viveboot.conf ]; then
 	cp -a /etc/viveboot/viveboot.conf "$DESTDIR/etc/viveboot/"
 fi
+# 부팅 게이트 (vive-boot-gate enable 이 만든다). 없으면 게이트가 꺼진 것이다.
+if [ -r /etc/viveboot/gate ]; then
+	cp -a /etc/viveboot/gate "$DESTDIR/etc/viveboot/"
+fi
 
 # 3) openssl (PBKDF2/HMAC). libcrypto 는 copy_exec 가 따라온다.
 copy_exec /usr/bin/openssl /usr/bin

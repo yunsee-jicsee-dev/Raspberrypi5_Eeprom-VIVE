@@ -53,6 +53,43 @@ python3 tools/vive-floppy-token info /tmp/token.img
 sh tests/run.sh          # 파이썬 구현과 initramfs 쉘 구현이 같은 키를 내는지 검증
 ```
 
+## 암호화 없이 부팅만 막기 (부팅 게이트)
+
+루트를 LUKS 로 암호화하지 않은 기기용이다. 디스켓이 없으면 루트를 마운트하기
+전에 멈추고 전원을 끈다.
+
+```sh
+sudo ./install.sh
+sudo vive-floppy-token format /dev/sdb --label PI5-ROOT --compact --ask-pin
+sudo vive-floppy-token backup /dev/sdb /root/token-backup.img
+sudo apt install cryptsetup-initramfs     # PIN 을 쓰면: 부팅 화면에서 PIN 을 받는 askpass
+sudo vive-boot-gate enable                # 켜기
+sudo vive-boot-gate status
+sudo vive-boot-gate disable               # 끄기
+```
+
+`enable` 은 부팅 때와 같은 키스크립트로 디스켓을 실제로 읽어 본 뒤에만 켜고,
+새 initramfs 안에 게이트를 통과하는 데 필요한 것(키스크립트·openssl 등)이
+모두 들어갔는지 확인한다. 하나라도 빠졌으면 되돌린다 — 빠진 채로 켜지면 매번
+전원이 꺼지기 때문이다. 실패했을 때 initramfs 쉘로 떨어뜨리지 않는 것도
+같은 이유다(쉘이 곧 우회로가 된다).
+
+**한계 — 이건 잠금이지 금고가 아니다.** 루트가 평문이므로:
+
+- SSD 를 떼어 다른 기계에 꽂으면 내용이 그대로 보인다.
+- 부트 파티션(평문 FAT)의 `cmdline.txt` 를 고칠 수 있는 사람은 게이트를
+  건너뛴다. `viveboot=off` 는 그 문서화된 길일 뿐이고, `BYPASS_CMDLINE=no` 로
+  막아도 `init=/bin/sh` 나 `break=top` 같은 일반 커널 인자로 똑같이 우회된다.
+
+즉 막는 것은 '키보드·화면만 만질 수 있는 사람이 이 기기를 켜서 쓰는 것' 이다.
+데이터까지 지키려면 루트를 LUKS 로 암호화하고 아래의 `vive-luks-enroll` 을
+쓴다 (그 경우 위 우회들로 얻는 것은 패스프레이즈 화면뿐이다).
+
+**디스켓을 잃었을 때:** 백업 이미지로 새 디스켓을 만든다
+(`vive-floppy-token restore /root/token-backup.img /dev/sdb` — 이미지가 루트
+안에 있으면 먼저 `viveboot=off` 로 들어가야 하니 루트 **밖에도** 한 부 두라).
+또는 `cmdline.txt` 끝에 ` viveboot=off` 를 붙여 부팅한 뒤 `sudo vive-boot-gate disable`.
+
 ## 켜고 끄기
 
 제거하지 않고 토큰 요구만 켜고 끈다. 끈 상태에서도 토큰 키슬롯은 LUKS 안에

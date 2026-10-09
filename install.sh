@@ -11,6 +11,7 @@ LIBDIR=$DESTDIR$PREFIX/usr/lib/viveboot
 CONFDIR=$DESTDIR$PREFIX/etc/viveboot
 HOOKDIR=$DESTDIR$PREFIX/usr/share/initramfs-tools/hooks
 BOTTOMDIR=$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-bottom
+TOPDIR=$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-top
 UNITDIR=$DESTDIR$PREFIX/lib/systemd/system
 DOCDIR=$DESTDIR$PREFIX/usr/share/doc/viveboot
 
@@ -21,13 +22,14 @@ log() { printf 'install: %s\n' "$*" >&2; }
 	exit 1
 }
 
-for d in "$BIN" "$LIBDIR" "$CONFDIR" "$HOOKDIR" "$BOTTOMDIR" "$UNITDIR" "$DOCDIR"; do
+for d in "$BIN" "$LIBDIR" "$CONFDIR" "$HOOKDIR" "$BOTTOMDIR" "$TOPDIR" "$UNITDIR" "$DOCDIR"; do
 	mkdir -p "$d"
 done
 
 install -m 0755 "$SRC/tools/vive-floppy-token" "$BIN/vive-floppy-token"
 install -m 0755 "$SRC/tools/vive-luks-enroll" "$BIN/vive-luks-enroll"
 install -m 0755 "$SRC/tools/vive-boot-mode" "$BIN/vive-boot-mode"
+install -m 0755 "$SRC/tools/vive-boot-gate" "$BIN/vive-boot-gate"
 install -m 0755 "$SRC/tools/viveboot-seqcheck" "$LIBDIR/viveboot-seqcheck"
 install -m 0644 "$SRC/lib/viveboot-common.sh" "$LIBDIR/viveboot-common.sh"
 install -m 0755 "$SRC/initramfs/scripts/viveboot-keyscript" \
@@ -35,6 +37,8 @@ install -m 0755 "$SRC/initramfs/scripts/viveboot-keyscript" \
 install -m 0755 "$SRC/initramfs/hooks/viveboot" "$HOOKDIR/viveboot"
 install -m 0755 "$SRC/initramfs/scripts/local-bottom/viveboot" \
 	"$BOTTOMDIR/viveboot"
+install -m 0755 "$SRC/initramfs/scripts/local-top/viveboot-gate" \
+	"$TOPDIR/viveboot-gate"
 install -m 0644 "$SRC/systemd/viveboot-seqcheck.service" \
 	"$UNITDIR/viveboot-seqcheck.service"
 for f in "$SRC"/docs/*.md "$SRC/README.md"; do

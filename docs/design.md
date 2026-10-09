@@ -200,6 +200,7 @@ cryptsetup(initramfs)
 | **루트 권한 공격자** | 열린 LUKS 키와 `/var/lib/viveboot/state` 를 모두 건드릴 수 있다 |
 | **디스켓 열화** | 자성 매체는 상한다. 백업 이미지가 없으면 데이터를 잃는다 |
 | **우회 플래그 주입** | `cmdline.txt` 는 평문 FAT 에 있어 물리 접근자가 `viveboot=off` 를 넣을 수 있다. 얻는 것은 패스프레이즈 화면뿐이라 기밀성은 유지된다 (아래 참고). 2요소를 지키려면 `BYPASS_CMDLINE=no` |
+| **게이트 모드(평문 루트)의 모든 것** | `vive-boot-gate` 는 LUKS 없이 '토큰 없으면 부팅 중단' 만 건다. SSD 를 떼어 읽거나, `cmdline.txt` 에 `init=/bin/sh`·`break=top` 을 넣으면 그대로 통과한다 (`BYPASS_CMDLINE=no` 와 무관). 막는 것은 키보드·화면만 만질 수 있는 사람이 켜서 쓰는 것뿐이다 |
 | **콜드 부트 / DMA** | 범위 밖 |
 
 "흩어 배치"와 "난수 채움"은 *우연한 노출*과 *부분 덮어쓰기* 를 막는 장치다.

@@ -32,6 +32,8 @@ fi
 rm -f "$DESTDIR$PREFIX/usr/bin/vive-floppy-token" \
 	"$DESTDIR$PREFIX/usr/bin/vive-luks-enroll" \
 	"$DESTDIR$PREFIX/usr/bin/vive-boot-mode" \
+	"$DESTDIR$PREFIX/usr/bin/vive-boot-gate" \
+	"$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-top/viveboot-gate" \
 	"$DESTDIR$PREFIX/usr/share/initramfs-tools/hooks/viveboot" \
 	"$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-bottom/viveboot" \
 	"$DESTDIR$PREFIX/lib/systemd/system/viveboot-seqcheck.service"
