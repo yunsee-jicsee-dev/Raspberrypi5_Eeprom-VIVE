@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # 인트로를 plymouth 부팅 테마로 설치한다.
 #
-#   sudo scripts/install-plymouth-theme.sh             설치
-#   sudo scripts/install-plymouth-theme.sh --uninstall 원래 테마로 복구
-#   sudo scripts/install-plymouth-theme.sh --no-cmdline  cmdline.txt 는 건드리지 않기
+#   sudo boot/install.sh             설치
+#   sudo boot/install.sh --uninstall 원래 테마로 복구
+#   sudo boot/install.sh --no-cmdline  cmdline.txt 는 건드리지 않기
 #
 # systemd 서비스와 달리 부팅 경로에 끼어들지 않는다. plymouth 는 원래 그 자리에
 # 있는 프로그램이고, 테마가 잘못돼도 스플래시가 안 뜰 뿐 부팅은 그대로 진행된다.
 set -euo pipefail
+export PYGAME_HIDE_SUPPORT_PROMPT=1
 
 NAME=rpi5-intro
 THEME_ROOT=/usr/share/plymouth/themes
@@ -95,7 +96,7 @@ python3 -c "import pygame" 2>/dev/null \
 BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 echo "인트로 프레임을 굽는 중..."
-python3 "$SRC_DIR/scripts/make-plymouth-theme.py" --out "$BUILD" --theme-dir "$THEME_DIR" \
+python3 "$SRC_DIR/boot/make-theme.py" --out "$BUILD" --theme-dir "$THEME_DIR" \
     | sed 's/^/  /'
 [[ -f "$BUILD/$NAME/$NAME.plymouth" ]] || die "테마를 만들지 못했습니다."
 

@@ -1,16 +1,16 @@
-"""부팅 인트로 재생기 — 리눅스 프레임버퍼(/dev/fb0) 에 인트로를 틀어 준다.
+"""인트로 재생기 — 화면에 인트로를 한 번 튼다. 하는 일은 그게 전부다.
 
-데스크톱도 X 도 없는 부팅 초기에 돌아가야 하므로 창(SDL 윈도) 대신
-/dev/fb0 에 픽셀을 직접 써 넣는다.  systemd 서비스로 등록하면 전원을
-넣고 몇 초 뒤 라즈베리 로고 인트로가 모니터에 나오고, 끝나면 평소처럼
-데스크톱(또는 콘솔) 으로 넘어간다.
+창이든 콘솔이든, 쓸 수 있는 출력을 알아서 고른다.
 
-    python3 bootintro.py                      # /dev/fb0 에 한 번 재생
-    python3 bootintro.py --display sdl        # 개발 PC 에서 창으로 확인
-    python3 bootintro.py --loop               # 끝나면 다시 (전시용)
-    python3 bootintro.py --save-frames out/   # 프레임을 PNG 로 떨궈 확인
+    sudo python3 play.py                 # 알아서 (데스크톱이면 창, 아니면 KMS → fb)
+    python3 play.py --display sdl        # 창으로
+    python3 play.py --display sdl --fullscreen
+    sudo python3 play.py --display kms   # 콘솔에서 화면을 직접 잡아서
+    python3 play.py --save-frames out/   # 재생 대신 PNG 로 떨구기
+    python3 play.py --loop               # 끝나면 다시 (전시용)
 
-설치는 scripts/install-bootintro.sh 참고.
+로그인할 때 자동으로 틀려면:  sudo ./install.sh
+부팅 스플래시로 쓰려면:       sudo boot/install.sh
 """
 import argparse
 import array
@@ -22,9 +22,11 @@ import struct
 import sys
 import time
 
-import pygame
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
-import intro
+import pygame  # noqa: E402
+
+import intro  # noqa: E402
 
 FB_DEFAULT = "/dev/fb0"
 

@@ -352,7 +352,7 @@ class Intro:
 def load_text():
     """글자 그리기 객체. main.py 가 있으면 그 폰트를, 없으면 pixelfont 를 쓴다.
 
-    부팅 인트로(bootintro.py)는 메뉴 없이 혼자 돌아야 해서 main.py 에 기대지 않는다.
+    재생기(play.py)는 메뉴 없이 혼자 돌아야 해서 main.py 에 기대지 않는다.
     """
     try:
         import main

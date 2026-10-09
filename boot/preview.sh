@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 재부팅하지 않고 지금 바로 plymouth 테마를 화면에 띄워 본다.
 #
-#   sudo scripts/preview-plymouth.sh         8초 동안 재생
-#   sudo scripts/preview-plymouth.sh 15      15초 동안
+#   sudo boot/preview.sh         8초 동안 재생
+#   sudo boot/preview.sh 15      15초 동안
 #
 # 콘솔(Ctrl+Alt+F2) 에서 돌리세요. 데스크톱 안에서는 컴포지터가 화면을 쥐고
 # 있어서 안 보입니다.
@@ -10,6 +10,7 @@
 # 끝나면 테마 스크립트의 오류를 찍어 줍니다. 문법이 틀렸다면 여기서 몇 번째
 # 줄인지 나옵니다.
 set -uo pipefail
+export PYGAME_HIDE_SUPPORT_PROMPT=1
 
 LOG=/tmp/plymouth-preview.log
 SECS="${1:-8}"

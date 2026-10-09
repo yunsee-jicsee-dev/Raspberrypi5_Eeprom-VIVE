@@ -1,0 +1,14 @@
+[Desktop Entry]
+# 로그인하면 인트로를 전체화면으로 한 번 재생한다.
+# 설치 위치: ~/.config/autostart/rpi5-intro.desktop   (sudo ./install.sh 가 넣는다)
+#
+# 부팅 경로에는 아무것도 끼워 넣지 않는다. 이게 잘못돼도 인트로가 안 나올 뿐
+# 부팅은 평소대로 진행된다. 대신 바탕화면이 그려진 뒤에 프로세스가 시작되므로
+# 바탕화면이 0.5초쯤 비친다. 그게 싫으면 부팅 스플래시로:  sudo boot/install.sh
+Type=Application
+Name=Raspberry Pi 5 intro
+Comment=로그인할 때 라즈베리파이 5 인트로 재생
+Exec=/usr/bin/python3 /opt/rpi5-intro/play.py --display sdl --fullscreen --wait-display 20 --fps 30 --max-seconds 30 --quiet
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

@@ -4,8 +4,8 @@ plymouth 스크립트 언어로 연출을 다시 짜는 대신, 지금 파이썬
 PNG 프레임으로 뽑아서 plymouth 가 한 장씩 넘기게 한다. 그림은 픽셀 단위로
 똑같다.
 
-    python3 scripts/make-plymouth-theme.py            # build/rpi5-intro/ 에 생성
-    python3 scripts/make-plymouth-theme.py --fps 25 --zoom 3
+    python3 boot/make-theme.py            # build/rpi5-intro/ 에 생성
+    python3 boot/make-theme.py --fps 25 --zoom 3
 
 프레임은 400x240 으로 그린 뒤 정수 배율로만 키운다 (도트가 뭉개지지 않게).
 plymouth 는 이걸 전부 메모리에 올리므로 장수와 크기가 곧 메모리다:
@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 import pygame  # noqa: E402
 
@@ -32,7 +33,7 @@ THEME_DIR = "/usr/share/plymouth/themes/" + THEME_NAME
 # plymouth 는 refresh 를 초당 50회쯤 부른다. 프레임 간격은 그 비율로 센다.
 PLYMOUTH_REFRESH_HZ = 50.0
 
-SCRIPT = '''# 라즈베리파이 5 부팅 인트로 — scripts/make-plymouth-theme.py 가 생성함.
+SCRIPT = '''# 라즈베리파이 5 부팅 인트로 — boot/make-theme.py 가 생성함.
 # 연출은 파이썬 쪽에서 구운 PNG 를 한 장씩 넘기는 것뿐이다.
 #
 # plymouth 스크립트 판본마다 되는 문법이 조금씩 달라서 일부러 소박하게 썼다.
@@ -160,7 +161,7 @@ def main(argv=None):
     print(f"{outdir}/ 에 만들었습니다")
     print(f"  {count}장 x {w}x{h} ({a.fps}fps, {intro.LENGTH}초)")
     print(f"  디스크 {total / 1024 / 1024:.1f}MB / plymouth 가 쓸 메모리 약 {mb:.0f}MB")
-    print("  설치:  sudo scripts/install-plymouth-theme.sh")
+    print("  설치:  sudo boot/install.sh")
     return 0
 
 
