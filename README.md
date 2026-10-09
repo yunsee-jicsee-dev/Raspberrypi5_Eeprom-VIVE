@@ -10,49 +10,56 @@
 | `intro.py` | 인트로 연출 한 장면 (`Intro.draw(surf, t)`). 혼자 실행하면 창에서 미리보기 |
 | `pixelfont.py` | 5x7 비트맵 폰트. ttf 없이 글자를 그린다 |
 | `bootintro.py` | 인트로 재생기. 프레임버퍼(`/dev/fb0`) 또는 전체화면 창 |
-| `systemd/rpi5-bootintro.service` | 콘솔/헤드리스용. 부팅이 끝난 뒤 한 번 재생 |
-| `desktop/rpi5-bootintro.desktop` | 데스크톱용. 로그인 후 전체화면으로 한 번 재생 |
-| `scripts/install-bootintro.sh` | 기기에 맞는 쪽을 골라 설치/제거 |
+| `systemd/rpi5-bootintro.service` | 기본. 데스크톱이 뜨기 전에 프레임버퍼로 재생 |
+| `desktop/rpi5-bootintro.desktop` | 대안. 로그인 세션 안에서 전체화면 창으로 재생 |
+| `scripts/install-bootintro.sh` | 설치/제거 |
 
 ## 부팅할 때 인트로 띄우기
 
 ```bash
 sudo apt install -y python3-pygame
 sudo scripts/install-bootintro.sh
+sudo reboot
 ```
 
-설치 스크립트가 `systemctl get-default` 를 보고 둘 중 하나를 고른다.
+`rpi5-bootintro.service` 가 **`multi-user.target` 과 `display-manager.service`
+사이**에 들어간다. 여기가 유일하게 맞는 자리다.
 
-**데스크톱으로 부팅하는 기기** (`graphical.target`) — 로그인 세션이 시작되자마자
-전체화면 창으로 재생한다. `~/.config/autostart/rpi5-bootintro.desktop` 이 들어간다.
-데스크톱이 떠 있으면 컴포지터(Wayland) 가 화면을 쥐고 있어서 `/dev/fb0` 에 써 봐야
-아무것도 안 보이기 때문에, 이쪽은 프레임버퍼를 쓰지 않는다.
+- 그 앞: 올라올 서비스는 이미 다 올라왔다 (부팅 과정을 붙잡지 않는다)
+- 그 뒤: 컴포지터가 아직 시작되지 않아 `/dev/fb0` 이 우리 것이다
 
-바탕화면이 잠깐 비치지 않도록, 창을 연 직후 검은 화면을 한 번 그려서 먼저 덮는다
-(Wayland 는 첫 `flip()` 전까지 서피스를 화면에 올리지 않는다). `--delay` 를 줘도
-그동안 바탕화면이 아니라 검은 화면이 보인다.
+데스크톱(바탕화면) 은 인트로 3.7초가 끝난 뒤에 시작한다. 그래서 바탕화면이
+먼저 비칠 일이 없다.
 
-**콘솔/헤드리스 기기** — `rpi5-bootintro.service` 가 `multi-user.target`,
-`graphical.target`, `display-manager.service` 가 **다 올라온 뒤에** 돈다.
-부팅 과정을 붙잡지 않으므로 부팅이 느려지지 않는다.
+### 왜 데스크톱 세션 안에서는 안 되나
 
-둘 중 하나만 깔린다. 다른 쪽으로 바꾸려면 `--desktop` / `--console` 을 직접 준다.
+XDG autostart(`~/.config/autostart/`) 는 바탕화면이 이미 그려진 **뒤에** 실행된다.
+창을 아무리 빨리 띄워도 프로세스가 시작되는 시점 자체가 늦어서, 바탕화면이 잠깐
+보이는 걸 없앨 수 없다. 게다가 그때는 컴포지터가 화면을 쥐고 있어서 `/dev/fb0`
+로는 아무것도 안 보이므로 전체화면 창을 써야 한다.
+
+그래도 이 방식이 필요하면 (기본 방식이 안 통하는 기기 등):
 
 ```bash
-sudo scripts/install-bootintro.sh --desktop
-sudo scripts/install-bootintro.sh --console
+sudo scripts/install-bootintro.sh --session
+```
+
+제거:
+
+```bash
 sudo scripts/install-bootintro.sh --uninstall
 ```
 
-바로 확인:
+### 안 나올 때
 
 ```bash
-python3 bootintro.py --display sdl --fullscreen          # 데스크톱에서 (sudo 없이)
-sudo systemctl start rpi5-bootintro.service              # 콘솔에서 (Ctrl+Alt+F2)
+journalctl -u rpi5-bootintro.service -b
 ```
 
-콘솔 쪽에서 부팅 로그 글자와 모서리 라즈베리를 가리려면 `/boot/firmware/cmdline.txt`
-(한 줄짜리 파일) 끝에 이어서 적는다:
+화면 정보를 읽었다면 `1920x1080 32bpp, 4배 확대` 같은 줄이 찍힌다. 그 줄이
+나오는데도 화면에 아무것도 없다면 `plymouth` 스플래시가 화면을 쥐고 있을 수 있다.
+`/boot/firmware/cmdline.txt` 에서 `splash` 를 지우고 아래를 이어서 적는다
+(한 줄짜리 파일이다):
 
 ```
 quiet logo.nologo vt.global_cursor_default=0 consoleblank=0

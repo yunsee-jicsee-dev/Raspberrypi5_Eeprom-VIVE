@@ -1,16 +1,25 @@
-# 부팅이 끝나고 — 모든 서비스가 올라온 다음 — 인트로를 한 번 재생한다 (콘솔/헤드리스).
-# 데스크톱으로 부팅하는 기기는 이 서비스 대신 desktop/rpi5-bootintro.desktop 을 쓴다.
+# 일반 서비스가 다 올라온 뒤, 데스크톱(바탕화면) 이 뜨기 전에 인트로를 한 번 재생한다.
+#
+# multi-user.target 과 display-manager.service 사이가 유일하게 맞는 자리다.
+#   - 그 앞:  올라올 서비스는 이미 다 올라왔다 (After=multi-user.target)
+#   - 그 뒤:  컴포지터가 아직 시작되지 않아 /dev/fb0 이 우리 것이다
+#            (Before=display-manager.service)
+# 데스크톱 세션 안(XDG autostart) 에서 띄우면 바탕화면이 먼저 그려진 뒤에야
+# 프로세스가 시작되므로 번쩍임을 없앨 수 없다.
+#
 # 설치:  sudo scripts/install-bootintro.sh
 [Unit]
-Description=Raspberry Pi 5 boot intro (console)
+Description=Raspberry Pi 5 boot intro
 Documentation=https://github.com/yunsee-jicsee-dev/Raspberrypi5_Eeprom-VIVE
-# 부팅 과정에 끼어들지 않고, 올라올 서비스가 다 올라온 뒤에 돈다.
-After=multi-user.target graphical.target display-manager.service systemd-user-sessions.service
+After=multi-user.target
+Before=display-manager.service graphical.target getty@tty1.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/rpi5-bootintro
-ExecStart=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display fb --wait-fb 10 --fps 30 --optional --quiet
+# plymouth 스플래시가 떠 있으면 화면(DRM) 을 쥐고 있어서 우리 그림이 안 보인다.
+ExecStartPre=-/bin/sh -c 'plymouth quit 2>/dev/null || true'
+ExecStart=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display fb --wait-fb 10 --fps 30 --optional
 TimeoutStartSec=60
 StandardOutput=journal
 StandardError=journal
