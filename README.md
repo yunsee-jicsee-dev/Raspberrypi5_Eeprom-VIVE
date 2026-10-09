@@ -51,6 +51,13 @@ sudo reboot
 `ModuleName=script` 를 쓰므로 script 플러그인(`/usr/lib/*/plymouth/script.so`)
 이 있어야 한다. 설치 스크립트가 미리 확인한다.
 
+**미리보기의 한계**: `preview-plymouth.sh` 는 `plymouthd` 를 손으로 띄우므로
+udev 열거가 실제 부팅과 다를 수 있다. 특히 `--tty` 를 넘기면 plymouth 가 udev 를
+끄고 `/dev/dri/card0` 을 그냥 쓰는데, 라즈베리파이 5 의 `card0` 은 `v3d`
+(3D 전용, 디스플레이 출력 없음) 라서 `Could not get card resources` 로 실패한다.
+그래서 스크립트는 `--tty` 를 넘기지 않는다. 그래도 미리보기가 실패하고 실제
+부팅은 잘 되는 경우가 있으니, **최종 확인은 재부팅으로 한다.**
+
 **시리얼 콘솔을 조심해야 한다.** 라즈베리파이는 `cmdline.txt` 에 기본으로
 `console=ttyAMA0,115200`(또는 `console=serial0`) 이 들어 있다. 이게 있으면
 plymouth 가

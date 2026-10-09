@@ -61,7 +61,11 @@ for need in splash plymouth.ignore-serial-consoles; do
 done
 
 echo "plymouth 를 띄웁니다 (${SECS}초)..."
-plymouthd --no-daemon --debug --debug-file="$LOG" --mode=boot --tty=/dev/tty1 \
+# --tty 는 넘기지 않는다. 넘기면 plymouth 가 udev 열거를 끄고(ignore-udev)
+# /dev/dri/card0 을 그냥 쓰는데, 라즈베리파이 5 의 card0 은 v3d(3D 전용, 디스플레이
+# 출력 없음) 라서 "Could not get card resources" 로 반드시 실패한다. 실제 부팅에서는
+# udev 가 살아 있어 올바른 카드(보통 vc4 쪽) 를 찾으므로, 미리보기도 그쪽에 맞춘다.
+plymouthd --no-daemon --debug --debug-file="$LOG" --mode=boot \
     --kernel-command-line="$KCMD" &
 sleep 2
 plymouth --show-splash
@@ -102,6 +106,31 @@ elif grep -q 'renderer type: 4294967295' "$LOG" 2>/dev/null; then
 else
     grep -iE 'renderer type|create_devices_for' "$LOG" 2>/dev/null | head -5 \
         || echo "  (해당 줄 없음)"
+fi
+
+echo
+echo "===== DRM 카드 ====="
+for c in /dev/dri/card*; do
+    [[ -e $c ]] || continue
+    n="$(basename "$c")"
+    drv="$(basename "$(readlink -f "/sys/class/drm/$n/device/driver" 2>/dev/null)" 2>/dev/null)"
+    outs="$(ls -d /sys/class/drm/"$n"-* 2>/dev/null | wc -l)"
+    echo "  $c  드라이버=${drv:-?}  출력단자=$outs $( ((outs==0)) && echo '(디스플레이 없음 — 3D 전용)')"
+done
+if grep -q 'Could not get card resources' "$LOG" 2>/dev/null; then
+    echo "  → plymouth 가 고른 카드에 디스플레이 출력이 없습니다."
+    grep -o "/dev/dri/card[0-9]*" "$LOG" | sort -u | sed 's/^/     골랐던 카드: /'
+    grep -q 'udev support disabled' "$LOG" \
+        && echo "     (udev 열거가 꺼져 있었습니다 — 실제 부팅에서는 켜져 있어 다를 수 있습니다)"
+fi
+
+echo
+echo "===== 기본 테마 링크 ====="
+if [[ -e /usr/share/plymouth/themes/default.plymouth ]]; then
+    echo "  $(readlink -f /usr/share/plymouth/themes/default.plymouth)"
+else
+    echo "  없음. plymouth 가 기본 테마를 못 찾을 수 있습니다:"
+    echo "      sudo plymouth-set-default-theme -R $(basename "$(plymouth-set-default-theme 2>/dev/null)")"
 fi
 
 echo
