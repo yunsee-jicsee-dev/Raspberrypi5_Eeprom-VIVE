@@ -339,6 +339,46 @@ class TestCompactMode(TokenTestCase):
         self.assertIn("넘습니다", res.stderr)
 
 
+class TestBackupBadSectors(TokenTestCase):
+    """상한 트랙이 있는 디스켓의 백업 (실물 /dev/sdb 에서 EIO 로 실패해 추가)."""
+
+    def backup_with_bad(self, bad_lbas):
+        real = vt.read_sector
+
+        def flaky(path, lba, count=1):
+            if any(lba <= b < lba + count for b in bad_lbas):
+                raise vt.TokenError("simulated EIO at %d" % lba)
+            return real(path, lba, count)
+
+        out = os.path.join(self.tmp, "backup.img")
+        args = type("A", (), {"device": self.img, "image": out,
+                              "force": True})()
+        vt.read_sector = flaky
+        try:
+            return out, vt.cmd_backup(args)
+        finally:
+            vt.read_sector = real
+
+    def test_unused_bad_sectors_are_skipped(self):
+        self.format_token("--compact", "--at", "15")
+        key = run_tool("derive", self.img).stdout.strip()
+        out, rc = self.backup_with_bad([100, 101, 2000])
+        self.assertEqual(rc, 0)
+        # 백업으로 복원해도 같은 키가 나와야 한다
+        target = os.path.join(self.tmp, "restored.img")
+        self.assertEqual(run_tool("restore", out, target).returncode, 0)
+        self.assertEqual(run_tool("derive", target).stdout.strip(), key)
+
+    def test_bad_token_sector_refuses_backup(self):
+        self.format_token("--compact", "--at", "15")
+        with self.assertRaises(vt.TokenError) as cm:
+            self.backup_with_bad([17])
+        self.assertIn("17", str(cm.exception))
+
+    def test_compress_ranges(self):
+        self.assertEqual(vt.compress_ranges([9, 3, 4, 5]), "3-5, 9")
+
+
 class TestKdfVectors(unittest.TestCase):
     """파생식이 바뀌면 기존 토큰이 전부 못 쓰게 되므로 고정 벡터로 묶어 둔다.
 

@@ -81,9 +81,14 @@ def device_size(path):
 
 
 def read_sector(path, lba, count=1):
-    with open(path, "rb") as fh:
-        fh.seek(lba * SECTOR)
-        data = fh.read(SECTOR * count)
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(lba * SECTOR)
+            data = fh.read(SECTOR * count)
+    except OSError as exc:
+        where = ("섹터 %d" % lba) if count == 1 else \
+            ("섹터 %d~%d" % (lba, lba + count - 1))
+        raise TokenError("%s: %s 읽기 실패 - %s" % (path, where, exc))
     if len(data) != SECTOR * count:
         raise TokenError(
             "섹터 %d 읽기 실패 (%d/%d 바이트). 매체가 짧거나 읽기 오류입니다."
@@ -611,7 +616,36 @@ def cmd_backup(args):
     hdr = Header.unpack(read_sector(args.device, 0))
     if os.path.exists(args.image) and not args.force:
         raise TokenError("%s 가 이미 있습니다. --force 로 덮어쓰세요." % args.image)
-    data = read_sector(args.device, 0, FLOPPY_SECTORS)
+    # 한 번에 2880섹터를 읽으면 상한 트랙 하나 때문에 백업 전체가 실패한다.
+    # 트랙(18섹터) 단위로 읽고, 실패한 트랙만 섹터 단위로 다시 읽는다.
+    # 토큰이 쓰지 않는 섹터가 안 읽히면 0 으로 채우고 넘어간다. 토큰이 쓰는
+    # 섹터(헤더·카운터·조각)가 안 읽히면 그 백업은 쓸모가 없으므로 실패한다.
+    needed = {0, hdr.seq_lba, hdr.seq_lba_mirror} | set(hdr.shard_lbas)
+    track = 18
+    buf = bytearray(FLOPPY_BYTES)
+    bad = []
+    for base in range(0, FLOPPY_SECTORS, track):
+        n = min(track, FLOPPY_SECTORS - base)
+        try:
+            buf[base * SECTOR:(base + n) * SECTOR] = \
+                read_sector(args.device, base, n)
+            continue
+        except TokenError:
+            pass
+        for lba in range(base, base + n):
+            try:
+                buf[lba * SECTOR:(lba + 1) * SECTOR] = \
+                    read_sector(args.device, lba)
+            except TokenError:
+                bad.append(lba)
+    lost = sorted(set(bad) & needed)
+    if lost:
+        raise TokenError(
+            "%s: 토큰이 쓰는 섹터 %s 를 읽을 수 없습니다. 백업하지 않았습니다.\n"
+            "이 디스켓의 토큰은 이미 손상되었을 수 있습니다: "
+            "sudo vive-floppy-token verify %s"
+            % (args.device, ", ".join(str(x) for x in lost), args.device))
+    data = bytes(buf)
     fd = os.open(args.image, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, data)
@@ -623,7 +657,24 @@ def cmd_backup(args):
         "경고: 이 파일은 토큰과 동등한 비밀값입니다. 오프라인 매체에 두고 "
         "접근 권한을 0600으로 유지하세요.\n"
         % (args.image, len(data), uuid.UUID(bytes=hdr.token_uuid)))
+    if bad:
+        sys.stderr.write(
+            "참고: 읽을 수 없는 섹터 %d개 (토큰이 쓰지 않는 영역): %s\n"
+            "      이미지에는 0 으로 채웠습니다. 토큰 동작에는 영향이 없지만 "
+            "디스켓이 상해 가고 있다는 뜻입니다. 예비 디스켓을 만들어 두세요.\n"
+            % (len(bad), compress_ranges(bad)))
     return 0
+
+
+def compress_ranges(lbas):
+    """[3,4,5,9] -> '3-5, 9'"""
+    out = []
+    for lba in sorted(lbas):
+        if out and lba == out[-1][1] + 1:
+            out[-1][1] = lba
+        else:
+            out.append([lba, lba])
+    return ", ".join(str(a) if a == b else "%d-%d" % (a, b) for a, b in out)
 
 
 def cmd_restore(args):
