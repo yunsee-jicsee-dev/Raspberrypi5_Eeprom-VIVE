@@ -1,0 +1,21 @@
+[Unit]
+Description=VIVE 플로피 토큰 부팅 카운터 검사
+Documentation=file:/usr/share/doc/viveboot/design.md
+DefaultDependencies=no
+After=local-fs.target systemd-journald.socket
+Requires=local-fs.target
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+ConditionPathExists=/run/viveboot/boot-seq
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/viveboot/viveboot-seqcheck
+RemainAfterExit=no
+# 검사 실패(불일치)는 로그로 남기고 부팅 자체는 막지 않는다.
+SuccessExitStatus=0 1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

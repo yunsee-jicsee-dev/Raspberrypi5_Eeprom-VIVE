@@ -1,0 +1,25 @@
+#!/bin/sh
+# local-bottom - switch_root 직전에 initramfs 가 남긴 키 재료를 지운다.
+# /run 은 실제 루트로 그대로 옮겨지므로 ikm 캐시를 반드시 여기서 없앤다.
+PREREQ=""
+
+prereqs() { echo "$PREREQ"; }
+
+case "${1:-}" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+if [ -f /run/viveboot/ikm.cache ]; then
+	# 덮어쓴 뒤 삭제한다 (tmpfs 라 복구 가능성은 낮지만 흔적을 줄인다).
+	dd if=/dev/urandom of=/run/viveboot/ikm.cache bs=1k count=4 \
+		conv=notrunc 2>/dev/null || true
+	rm -f /run/viveboot/ikm.cache
+fi
+rm -f /run/viveboot/hdrbody /run/viveboot/shardbody /run/viveboot/seqbody \
+	/run/viveboot/seqsec /run/viveboot/seqsec.pre /run/viveboot/seqsec.mac \
+	2>/dev/null || true
+
+exit 0

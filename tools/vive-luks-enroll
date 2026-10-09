@@ -1,0 +1,161 @@
+#!/bin/sh
+# vive-luks-enroll - 플로피 토큰에서 파생한 암호문을 LUKS 키슬롯에 등록/해제하고
+# /etc/crypttab 에 keyscript 를 연결한다.
+set -eu
+
+VB_TAG="vive-luks-enroll"
+TOKEN_TOOL=${TOKEN_TOOL:-/usr/bin/vive-floppy-token}
+KEYSCRIPT=${KEYSCRIPT:-/usr/lib/viveboot/viveboot-keyscript}
+CRYPTTAB=${CRYPTTAB:-/etc/crypttab}
+
+log() { printf '%s: %s\n' "$VB_TAG" "$*" >&2; }
+die() {
+	printf '%s: 오류: %s\n' "$VB_TAG" "$*" >&2
+	exit 1
+}
+
+usage() {
+	cat >&2 <<'USAGE'
+사용법:
+  vive-luks-enroll --token <토큰장치> --crypt-device <LUKS파티션> [옵션]
+  vive-luks-enroll --remove --token <토큰장치> --crypt-device <LUKS파티션>
+
+옵션:
+  --token DEV          플로피 토큰 장치 또는 이미지 (예: /dev/sda)
+  --crypt-device DEV   LUKS 파티션 (예: /dev/nvme0n1p2)
+  --name NAME          crypttab 의 매핑 이름 (기본: 기존 항목 또는 cryptroot)
+  --keyslot N          등록할 키슬롯 번호 (생략 시 cryptsetup 이 고름)
+  --pin PIN            PIN 을 인자로 전달 (생략 시 필요할 때 물어본다)
+  --no-crypttab        crypttab 을 건드리지 않는다
+  --no-initramfs       update-initramfs 를 실행하지 않는다
+  --remove             토큰 키슬롯을 LUKS 에서 제거한다
+  -h, --help           이 도움말
+
+등록은 기존 암호(복구용 패스프레이즈)를 한 번 물어본다. 그 암호는
+반드시 따로 보관해야 한다. 토큰을 잃으면 그 암호가 유일한 복구 수단이다.
+USAGE
+	exit 2
+}
+
+TOKEN=""
+CRYPTDEV=""
+NAME=""
+KEYSLOT=""
+PIN=""
+HAVE_PIN=no
+DO_CRYPTTAB=yes
+DO_INITRAMFS=yes
+MODE=add
+
+while [ $# -gt 0 ]; do
+	case $1 in
+	--token) TOKEN=${2:?}; shift 2 ;;
+	--crypt-device) CRYPTDEV=${2:?}; shift 2 ;;
+	--name) NAME=${2:?}; shift 2 ;;
+	--keyslot) KEYSLOT=${2:?}; shift 2 ;;
+	--pin) PIN=${2:?}; HAVE_PIN=yes; shift 2 ;;
+	--no-crypttab) DO_CRYPTTAB=no; shift ;;
+	--no-initramfs) DO_INITRAMFS=no; shift ;;
+	--remove) MODE=remove; shift ;;
+	-h|--help) usage ;;
+	*) die "알 수 없는 인자: $1" ;;
+	esac
+done
+
+[ -n "$TOKEN" ] || usage
+[ -n "$CRYPTDEV" ] || usage
+[ -e "$TOKEN" ] || die "$TOKEN 를 찾을 수 없습니다"
+[ -e "$CRYPTDEV" ] || die "$CRYPTDEV 를 찾을 수 없습니다"
+[ -x "$TOKEN_TOOL" ] || die "$TOKEN_TOOL 를 찾을 수 없습니다 (install.sh 를 먼저 실행하세요)"
+command -v cryptsetup >/dev/null 2>&1 || die "cryptsetup 이 필요합니다"
+[ "$(id -u)" = 0 ] || die "root 권한이 필요합니다"
+
+cryptsetup isLuks "$CRYPTDEV" || die "$CRYPTDEV 는 LUKS 장치가 아닙니다"
+"$TOKEN_TOOL" info "$TOKEN" >/dev/null || die "$TOKEN 토큰 헤더를 읽을 수 없습니다"
+
+# 키 파일은 tmpfs 위에만 둔다.
+KEYDIR=$(mktemp -d /run/vive-enroll.XXXXXX)
+cleanup() {
+	if [ -f "$KEYDIR/key" ]; then
+		dd if=/dev/urandom of="$KEYDIR/key" bs=64 count=1 conv=notrunc \
+			2>/dev/null || true
+	fi
+	rm -rf "$KEYDIR"
+}
+trap cleanup EXIT HUP INT TERM
+( umask 077 && : > "$KEYDIR/key" )
+
+if [ "$HAVE_PIN" = yes ]; then
+	"$TOKEN_TOOL" derive --no-newline --pin "$PIN" "$TOKEN" > "$KEYDIR/key"
+else
+	"$TOKEN_TOOL" derive --no-newline "$TOKEN" > "$KEYDIR/key"
+fi
+[ -s "$KEYDIR/key" ] || die "암호문 파생에 실패했습니다"
+[ "$(wc -c < "$KEYDIR/key")" = 64 ] || die "파생된 암호문 길이가 64자가 아닙니다"
+
+if [ "$MODE" = remove ]; then
+	log "$CRYPTDEV 에서 토큰 키슬롯을 제거합니다"
+	cryptsetup luksRemoveKey "$CRYPTDEV" "$KEYDIR/key" \
+		|| die "키슬롯 제거 실패 (이미 없을 수 있습니다)"
+	log "제거했습니다. crypttab 항목은 직접 지우세요: $CRYPTTAB"
+	exit 0
+fi
+
+log "$CRYPTDEV 에 토큰 키슬롯을 추가합니다."
+log "기존 암호(복구용 패스프레이즈)를 물어봅니다."
+if [ -n "$KEYSLOT" ]; then
+	cryptsetup luksAddKey --key-slot "$KEYSLOT" "$CRYPTDEV" "$KEYDIR/key"
+else
+	cryptsetup luksAddKey "$CRYPTDEV" "$KEYDIR/key"
+fi
+log "키슬롯 추가 완료."
+
+# --- crypttab ---------------------------------------------------------------
+if [ "$DO_CRYPTTAB" = yes ]; then
+	uuid=$(cryptsetup luksUUID "$CRYPTDEV")
+	[ -n "$uuid" ] || die "LUKS UUID 를 읽을 수 없습니다"
+	if [ -z "$NAME" ]; then
+		NAME=$(awk -v u="UUID=$uuid" -v d="$CRYPTDEV" \
+			'!/^[ \t]*#/ && NF >= 2 && ($2 == u || $2 == d) { print $1; exit }' \
+			"$CRYPTTAB" 2>/dev/null || true)
+		[ -n "$NAME" ] || NAME=cryptroot
+	fi
+	line="$NAME	UUID=$uuid	none	luks,initramfs,tries=3,keyscript=$KEYSCRIPT"
+	touch "$CRYPTTAB"
+	cp -a "$CRYPTTAB" "$CRYPTTAB.viveboot.bak"
+	log "$CRYPTTAB 백업: $CRYPTTAB.viveboot.bak"
+	if awk -v n="$NAME" '!/^[ \t]*#/ && $1 == n { found = 1 } END { exit !found }' \
+		"$CRYPTTAB"; then
+		awk -v n="$NAME" -v l="$line" \
+			'!/^[ \t]*#/ && $1 == n { print l; next } { print }' \
+			"$CRYPTTAB" > "$CRYPTTAB.new"
+		mv "$CRYPTTAB.new" "$CRYPTTAB"
+		log "crypttab 의 '$NAME' 항목을 keyscript 방식으로 바꿨습니다"
+	else
+		printf '%s\n' "$line" >> "$CRYPTTAB"
+		log "crypttab 에 '$NAME' 항목을 추가했습니다"
+	fi
+fi
+
+# --- initramfs --------------------------------------------------------------
+if [ "$DO_INITRAMFS" = yes ]; then
+	command -v update-initramfs >/dev/null 2>&1 \
+		|| die "update-initramfs 가 없습니다. 수동으로 initramfs 를 다시 만드세요"
+	log "initramfs 를 다시 만듭니다 (update-initramfs -u -k all)"
+	update-initramfs -u -k all
+fi
+
+cat >&2 <<EOF
+
+$VB_TAG: 끝났습니다.
+
+재부팅 전에 반드시 확인하세요:
+  1) /boot/firmware/config.txt 에 auto_initramfs=1 이 있는지
+  2) lsinitramfs /boot/initrd.img-\$(uname -r) | grep -E 'viveboot|openssl'
+  3) 복구용 패스프레이즈를 따로 적어 두었는지
+  4) 토큰 플로피를 USB 드라이브에 넣고 재부팅
+
+부팅이 막히면 플로피 없이 부팅 → initramfs 쉘에서
+  cryptsetup open $CRYPTDEV ${NAME:-cryptroot}
+를 복구용 패스프레이즈로 열고 exit 하면 계속 진행됩니다.
+EOF

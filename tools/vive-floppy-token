@@ -1,0 +1,624 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""vive-floppy-token - 플로피 섹터 기반 부팅 토큰 관리 도구.
+
+1.44MB 플로피(2880 x 512B 섹터)의 '원시 섹터'에 파일시스템 없이 키 조각(shard)을
+흩어 기록하고, 그 조각들로 LUKS 암호문(passphrase)을 재현한다.
+initramfs 단계의 키스크립트(POSIX sh + openssl)와 동일한 파생식을 사용하므로
+이 도구로 계산한 값과 부팅 시 계산되는 값은 바이트 단위로 같다.
+
+파생식 (keyscript와 공유):
+    ikm  = shard[0] || shard[1] || ... || shard[n-1]
+    pw   = HMAC-SHA256(key=ikm, msg=PIN)              # PIN 미사용 시 msg=""
+    key  = PBKDF2-HMAC-SHA256(pw, salt, iter, 32)
+    LUKS passphrase = hex(key)                        # 소문자 64자, 개행 없음
+    mackey = HMAC-SHA256(key=ikm, msg="viveboot-mac-v1")
+"""
+
+import argparse
+import binascii
+import datetime
+import hashlib
+import hmac
+import os
+import secrets
+import stat
+import struct
+import sys
+import uuid
+
+SECTOR = 512
+FLOPPY_SECTORS = 2880              # 1.44MB (1474560 바이트)
+FLOPPY_BYTES = SECTOR * FLOPPY_SECTORS
+
+HDR_MAGIC = b"VIVEFLP1"
+SHARD_MAGIC = b"VSHD"
+SEQ_MAGIC = b"VSEQ"
+HDR_VERSION = 1
+HDR_MAC_OFF = 0x1D0                # HMAC(salt, header[0:0x1D0])
+SHARD_AREA = 64                    # shard 바이트를 담는 고정 영역
+SHARD_MAC_OFF = 0x48
+SEQ_MAC_OFF = 0x10
+MAX_SHARDS = 64
+MAC_INFO = b"viveboot-mac-v1"
+STATE_INFO = b"viveboot-state-v1"
+
+DEFAULT_SHARDS = 6
+DEFAULT_SHARD_LEN = 32
+DEFAULT_ITER = 200000
+
+# 헤더 섹터는 어떤 OS도 자동 마운트하지 않아야 한다. FAT BPB로 보이지 않도록
+# 0x1FE 의 부트 시그니처(0x55AA)를 쓰지 않고, 0번 바이트도 점프 명령이 아니다.
+FORBIDDEN_BOOTSIG = b"\x55\xaa"
+
+
+class TokenError(Exception):
+    """사용자에게 그대로 보여줄 오류."""
+
+
+# --------------------------------------------------------------------------- #
+# 저수준 섹터 입출력
+# --------------------------------------------------------------------------- #
+
+def is_block_device(path):
+    try:
+        return stat.S_ISBLK(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
+def device_size(path):
+    if is_block_device(path):
+        with open(path, "rb") as fh:
+            return fh.seek(0, os.SEEK_END) or fh.tell()
+    return os.path.getsize(path)
+
+
+def read_sector(path, lba, count=1):
+    with open(path, "rb") as fh:
+        fh.seek(lba * SECTOR)
+        data = fh.read(SECTOR * count)
+    if len(data) != SECTOR * count:
+        raise TokenError(
+            "섹터 %d 읽기 실패 (%d/%d 바이트). 매체가 짧거나 읽기 오류입니다."
+            % (lba, len(data), SECTOR * count))
+    return data
+
+
+def write_sector(path, lba, data, sync=True):
+    if len(data) % SECTOR:
+        raise TokenError("섹터 크기(512B)의 배수가 아닌 데이터입니다.")
+    flags = os.O_WRONLY
+    if not is_block_device(path):
+        flags |= os.O_CREAT
+    fd = os.open(path, flags)
+    try:
+        os.lseek(fd, lba * SECTOR, os.SEEK_SET)
+        written = 0
+        while written < len(data):
+            written += os.write(fd, data[written:])
+        if sync:
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+# --------------------------------------------------------------------------- #
+# 헤더 / 섀드 / 카운터 직렬화
+# --------------------------------------------------------------------------- #
+
+class Header(object):
+    __slots__ = ("flags", "token_uuid", "salt", "iter", "shard_lbas",
+                 "shard_len", "seq_lba", "seq_lba_mirror", "created_at",
+                 "label")
+
+    FLAG_PIN = 1 << 0
+    FLAG_SEQ = 1 << 1
+
+    def __init__(self, **kw):
+        for name in self.__slots__:
+            setattr(self, name, kw.get(name))
+
+    @property
+    def pin_required(self):
+        return bool(self.flags & self.FLAG_PIN)
+
+    @property
+    def seq_enabled(self):
+        return bool(self.flags & self.FLAG_SEQ)
+
+    def pack(self):
+        if len(self.shard_lbas) > MAX_SHARDS:
+            raise TokenError("shard 개수는 최대 %d개입니다." % MAX_SHARDS)
+        buf = bytearray(SECTOR)
+        buf[0x000:0x008] = HDR_MAGIC
+        struct.pack_into("<HH", buf, 0x008, HDR_VERSION, SECTOR)
+        struct.pack_into("<I", buf, 0x00C, self.flags)
+        buf[0x010:0x020] = self.token_uuid
+        buf[0x020:0x040] = self.salt
+        struct.pack_into("<I", buf, 0x040, self.iter)
+        struct.pack_into("<HH", buf, 0x044, len(self.shard_lbas), self.shard_len)
+        for i, lba in enumerate(self.shard_lbas):
+            struct.pack_into("<H", buf, 0x048 + 2 * i, lba)
+        struct.pack_into("<HH", buf, 0x0C8, self.seq_lba, self.seq_lba_mirror)
+        struct.pack_into("<Q", buf, 0x0CC, self.created_at)
+        label = self.label.encode("utf-8")[:32]
+        buf[0x0D4:0x0D4 + len(label)] = label
+        mac = hmac.new(bytes(self.salt), bytes(buf[:HDR_MAC_OFF]),
+                       hashlib.sha256).digest()
+        buf[HDR_MAC_OFF:HDR_MAC_OFF + 32] = mac
+        assert bytes(buf[0x1FE:0x200]) != FORBIDDEN_BOOTSIG
+        return bytes(buf)
+
+    @classmethod
+    def unpack(cls, buf):
+        if buf[0x000:0x008] != HDR_MAGIC:
+            raise TokenError(
+                "VIVE 토큰 헤더를 찾을 수 없습니다 (magic 불일치). "
+                "토큰 플로피가 아니거나 포맷되지 않았습니다.")
+        version, hdr_len = struct.unpack_from("<HH", buf, 0x008)
+        if version != HDR_VERSION or hdr_len != SECTOR:
+            raise TokenError("지원하지 않는 헤더 버전입니다: v%d" % version)
+        salt = bytes(buf[0x020:0x040])
+        want = hmac.new(salt, bytes(buf[:HDR_MAC_OFF]), hashlib.sha256).digest()
+        if not hmac.compare_digest(want, bytes(buf[HDR_MAC_OFF:HDR_MAC_OFF + 32])):
+            raise TokenError("헤더 MAC 불일치 - 헤더 섹터가 손상되었습니다.")
+        flags, = struct.unpack_from("<I", buf, 0x00C)
+        iters, = struct.unpack_from("<I", buf, 0x040)
+        count, shard_len = struct.unpack_from("<HH", buf, 0x044)
+        if not 1 <= count <= MAX_SHARDS:
+            raise TokenError("헤더의 shard 개수가 비정상입니다: %d" % count)
+        if not 1 <= shard_len <= SHARD_AREA:
+            raise TokenError("헤더의 shard 길이가 비정상입니다: %d" % shard_len)
+        lbas = [struct.unpack_from("<H", buf, 0x048 + 2 * i)[0]
+                for i in range(count)]
+        seq_lba, seq_mirror = struct.unpack_from("<HH", buf, 0x0C8)
+        created, = struct.unpack_from("<Q", buf, 0x0CC)
+        label = bytes(buf[0x0D4:0x0F4]).rstrip(b"\0").decode("utf-8", "replace")
+        return cls(flags=flags, token_uuid=bytes(buf[0x010:0x020]), salt=salt,
+                   iter=iters, shard_lbas=lbas, shard_len=shard_len,
+                   seq_lba=seq_lba, seq_lba_mirror=seq_mirror,
+                   created_at=created, label=label)
+
+
+def pack_shard(idx, shard, salt):
+    buf = bytearray(secrets.token_bytes(SECTOR))
+    buf[0x000:0x004] = SHARD_MAGIC
+    struct.pack_into("<HH", buf, 0x004, idx, len(shard))
+    buf[0x008:0x008 + SHARD_AREA] = shard + b"\0" * (SHARD_AREA - len(shard))
+    mac = hmac.new(salt, bytes(buf[:SHARD_MAC_OFF]), hashlib.sha256).digest()
+    buf[SHARD_MAC_OFF:SHARD_MAC_OFF + 32] = mac
+    return bytes(buf)
+
+
+def unpack_shard(buf, idx, shard_len, salt):
+    if buf[0x000:0x004] != SHARD_MAGIC:
+        raise TokenError("shard %d: 섹터 magic 불일치 (손상 또는 덮어쓰기)." % idx)
+    got_idx, got_len = struct.unpack_from("<HH", buf, 0x004)
+    if got_idx != idx:
+        raise TokenError("shard %d: 인덱스가 %d로 기록되어 있습니다." % (idx, got_idx))
+    if got_len != shard_len:
+        raise TokenError("shard %d: 길이 불일치 (%d != %d)." % (idx, got_len, shard_len))
+    want = hmac.new(salt, bytes(buf[:SHARD_MAC_OFF]), hashlib.sha256).digest()
+    if not hmac.compare_digest(want, bytes(buf[SHARD_MAC_OFF:SHARD_MAC_OFF + 32])):
+        raise TokenError("shard %d: MAC 불일치 - 섹터가 손상되었습니다." % idx)
+    return bytes(buf[0x008:0x008 + shard_len])
+
+
+def pack_seq(seq, mackey):
+    buf = bytearray(secrets.token_bytes(SECTOR))
+    buf[0x000:0x004] = SEQ_MAGIC
+    struct.pack_into("<I", buf, 0x004, 0)
+    struct.pack_into("<Q", buf, 0x008, seq)
+    mac = hmac.new(mackey, bytes(buf[:SEQ_MAC_OFF]), hashlib.sha256).digest()
+    buf[SEQ_MAC_OFF:SEQ_MAC_OFF + 32] = mac
+    return bytes(buf)
+
+
+def unpack_seq(buf, mackey):
+    if buf[0x000:0x004] != SEQ_MAGIC:
+        raise TokenError("카운터 섹터 magic 불일치.")
+    want = hmac.new(mackey, bytes(buf[:SEQ_MAC_OFF]), hashlib.sha256).digest()
+    if not hmac.compare_digest(want, bytes(buf[SEQ_MAC_OFF:SEQ_MAC_OFF + 32])):
+        raise TokenError("카운터 섹터 MAC 불일치 - 위조되었거나 손상되었습니다.")
+    return struct.unpack_from("<Q", buf, 0x008)[0]
+
+
+# --------------------------------------------------------------------------- #
+# 키 파생
+# --------------------------------------------------------------------------- #
+
+def derive(ikm, salt, iterations, pin):
+    """keyscript와 동일한 파생. (passphrase_hex, mackey) 반환."""
+    pw = hmac.new(ikm, pin.encode("utf-8"), hashlib.sha256).digest()
+    key = hashlib.pbkdf2_hmac("sha256", pw, salt, iterations, 32)
+    mackey = hmac.new(ikm, MAC_INFO, hashlib.sha256).digest()
+    return key.hex(), mackey
+
+
+def collect_ikm(path, hdr):
+    shards = []
+    for i, lba in enumerate(hdr.shard_lbas):
+        shards.append(unpack_shard(read_sector(path, lba), i, hdr.shard_len,
+                                   hdr.salt))
+    return b"".join(shards)
+
+
+def pick_shard_lbas(count):
+    """shard를 디스크 전체에 흩어 배치한다.
+
+    0번(헤더)과 카운터용 2섹터를 제외한 영역을 count개 구간으로 나눠
+    구간마다 하나씩 무작위로 고른다. 연속 배치가 아니어서 부분 덮어쓰기나
+    단순 복사 시도에 더 잘 노출된다.
+    """
+    seq_lba, seq_mirror = 1, 2
+    reserved = {0, seq_lba, seq_mirror}
+    usable = [lba for lba in range(3, FLOPPY_SECTORS) if lba not in reserved]
+    span = len(usable) // count
+    chosen = []
+    for i in range(count):
+        window = usable[i * span:(i + 1) * span] or usable
+        chosen.append(secrets.choice(window))
+    return sorted(set(chosen)), seq_lba, seq_mirror
+
+
+# --------------------------------------------------------------------------- #
+# /boot 상태 파일 (복제/롤백 탐지용)
+# --------------------------------------------------------------------------- #
+
+def state_mac(mackey, token_uuid, seq):
+    msg = b"%s|%s|%d" % (STATE_INFO, binascii.hexlify(token_uuid), seq)
+    return hmac.new(mackey, msg, hashlib.sha256).hexdigest()
+
+
+def write_state(path, mackey, token_uuid, seq):
+    body = ("# viveboot 부팅 카운터 상태 - 비밀값 아님, 위조 방지용 MAC 포함\n"
+            "version=1\ntoken_uuid=%s\nseq=%d\nmac=%s\n"
+            % (binascii.hexlify(token_uuid).decode(), seq,
+               state_mac(mackey, token_uuid, seq)))
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    tmp = path + ".new"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(body)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def read_state(path):
+    out = {}
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip()
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# PIN 입력
+# --------------------------------------------------------------------------- #
+
+def ask_pin(hdr_requires_pin, given, confirm=False):
+    if given is not None:
+        return given
+    env = os.environ.get("VIVEBOOT_PIN")
+    if env is not None:
+        return env
+    if not hdr_requires_pin:
+        return ""
+    import getpass
+    pin = getpass.getpass("토큰 PIN: ")
+    if confirm and pin != getpass.getpass("PIN 확인: "):
+        raise TokenError("PIN이 일치하지 않습니다.")
+    return pin
+
+
+# --------------------------------------------------------------------------- #
+# 명령 구현
+# --------------------------------------------------------------------------- #
+
+def check_target(path, allow_create, force):
+    if is_block_device(path):
+        size = device_size(path)
+        if size > 4 * 1024 * 1024 and not force:
+            raise TokenError(
+                "%s 는 %.1f MiB 입니다. 1.44MB 플로피가 아닌 장치를 덮어쓰려 합니다.\n"
+                "정말 이 장치를 토큰으로 쓰려면 --force 를 붙이세요."
+                % (path, size / 1048576.0))
+        if size < FLOPPY_BYTES:
+            raise TokenError("%s 는 %d 바이트로 1.44MB보다 작습니다." % (path, size))
+        return
+    if os.path.exists(path):
+        if not force:
+            raise TokenError("%s 가 이미 있습니다. 덮어쓰려면 --force 를 붙이세요." % path)
+        return
+    if not allow_create:
+        raise TokenError("%s 를 찾을 수 없습니다." % path)
+
+
+def cmd_format(args):
+    check_target(args.device, allow_create=True, force=args.force)
+    if args.shards < 1 or args.shards > MAX_SHARDS:
+        raise TokenError("--shards 는 1~%d 범위여야 합니다." % MAX_SHARDS)
+    if args.iter < 10000:
+        raise TokenError("--iter 는 최소 10000 이상을 권장합니다.")
+
+    pin = ""
+    if args.pin is not None or args.ask_pin:
+        pin = ask_pin(True, args.pin, confirm=True)
+
+    salt = secrets.token_bytes(32)
+    shard_lbas, seq_lba, seq_mirror = pick_shard_lbas(args.shards)
+    flags = Header.FLAG_SEQ
+    if pin:
+        flags |= Header.FLAG_PIN
+    hdr = Header(flags=flags, token_uuid=uuid.uuid4().bytes, salt=salt,
+                 iter=args.iter, shard_lbas=shard_lbas,
+                 shard_len=DEFAULT_SHARD_LEN, seq_lba=seq_lba,
+                 seq_lba_mirror=seq_mirror,
+                 created_at=int(datetime.datetime.now().timestamp()),
+                 label=args.label)
+
+    # 1) 전체 섹터를 난수로 덮는다. 빈 영역과 키 영역이 구별되지 않게 한다.
+    sys.stderr.write("전체 %d 섹터를 난수로 채웁니다...\n" % FLOPPY_SECTORS)
+    chunk = 64
+    for base in range(0, FLOPPY_SECTORS, chunk):
+        n = min(chunk, FLOPPY_SECTORS - base)
+        write_sector(args.device, base, secrets.token_bytes(n * SECTOR),
+                     sync=False)
+    # 2) 키 조각, 카운터, 헤더(마지막)
+    shards = [secrets.token_bytes(DEFAULT_SHARD_LEN) for _ in shard_lbas]
+    for i, lba in enumerate(shard_lbas):
+        write_sector(args.device, lba, pack_shard(i, shards[i], salt))
+    ikm = b"".join(shards)
+    passphrase, mackey = derive(ikm, salt, args.iter, pin)
+    write_sector(args.device, seq_lba, pack_seq(1, mackey))
+    write_sector(args.device, seq_mirror, pack_seq(1, mackey))
+    write_sector(args.device, 0, hdr.pack())
+
+    sys.stderr.write(
+        "완료: %s\n  라벨      : %s\n  토큰 UUID : %s\n  shard LBA : %s\n"
+        "  PBKDF2    : %d 회\n  PIN       : %s\n"
+        % (args.device, hdr.label, uuid.UUID(bytes=hdr.token_uuid),
+           " ".join(str(x) for x in shard_lbas), args.iter,
+           "사용" if pin else "사용 안 함"))
+    if args.state:
+        write_state(args.state, mackey, hdr.token_uuid, 1)
+        sys.stderr.write("  상태 파일 : %s (seq=1)\n" % args.state)
+    if args.print_passphrase:
+        sys.stdout.write(passphrase + "\n")
+    else:
+        sys.stderr.write(
+            "\nLUKS 등록은 다음으로 진행하세요:\n"
+            "  sudo vive-luks-enroll --token %s --crypt-device <root 파티션>\n"
+            % args.device)
+    return 0
+
+
+def cmd_info(args):
+    hdr = Header.unpack(read_sector(args.device, 0))
+    created = datetime.datetime.fromtimestamp(hdr.created_at)
+    print("장치          : %s (%d 바이트)" % (args.device, device_size(args.device)))
+    print("라벨          : %s" % hdr.label)
+    print("토큰 UUID     : %s" % uuid.UUID(bytes=hdr.token_uuid))
+    print("생성 시각     : %s" % created.strftime("%Y-%m-%d %H:%M:%S"))
+    print("shard 개수    : %d (각 %d 바이트)" % (len(hdr.shard_lbas), hdr.shard_len))
+    print("shard LBA     : %s" % " ".join(str(x) for x in hdr.shard_lbas))
+    print("카운터 LBA    : %d (사본 %d)" % (hdr.seq_lba, hdr.seq_lba_mirror))
+    print("PBKDF2 반복   : %d" % hdr.iter)
+    print("PIN 필요      : %s" % ("예" if hdr.pin_required else "아니오"))
+    print("부팅 카운터   : %s" % ("사용" if hdr.seq_enabled else "사용 안 함"))
+    return 0
+
+
+def cmd_verify(args):
+    hdr = Header.unpack(read_sector(args.device, 0))
+    ikm = collect_ikm(args.device, hdr)
+    pin = ask_pin(hdr.pin_required, args.pin)
+    _, mackey = derive(ikm, hdr.salt, hdr.iter, pin)
+    primary = unpack_seq(read_sector(args.device, hdr.seq_lba), mackey)
+    try:
+        mirror = unpack_seq(read_sector(args.device, hdr.seq_lba_mirror), mackey)
+    except TokenError as exc:
+        print("경고: 카운터 사본 읽기 실패 - %s" % exc)
+        mirror = None
+    print("헤더/shard/카운터 검증 통과. seq=%d%s"
+          % (primary, "" if mirror is None else " (사본 %d)" % mirror))
+    if args.state and os.path.exists(args.state):
+        st = read_state(args.state)
+        expect = state_mac(mackey, hdr.token_uuid, int(st.get("seq", -1)))
+        if not hmac.compare_digest(expect, st.get("mac", "")):
+            raise TokenError("상태 파일 MAC 불일치 - 위조되었거나 다른 토큰입니다.")
+        print("상태 파일 seq=%s (MAC 정상)" % st.get("seq"))
+        if int(st["seq"]) != primary:
+            print("경고: 토큰 seq(%d)와 상태 파일 seq(%s)가 다릅니다. "
+                  "복제 또는 롤백 가능성." % (primary, st["seq"]))
+    return 0
+
+
+def cmd_derive(args):
+    hdr = Header.unpack(read_sector(args.device, 0))
+    ikm = collect_ikm(args.device, hdr)
+    pin = ask_pin(hdr.pin_required, args.pin)
+    passphrase, _ = derive(ikm, hdr.salt, hdr.iter, pin)
+    sys.stdout.write(passphrase if args.no_newline else passphrase + "\n")
+    return 0
+
+
+def cmd_seq(args):
+    hdr = Header.unpack(read_sector(args.device, 0))
+    ikm = collect_ikm(args.device, hdr)
+    pin = ask_pin(hdr.pin_required, args.pin)
+    _, mackey = derive(ikm, hdr.salt, hdr.iter, pin)
+    current = unpack_seq(read_sector(args.device, hdr.seq_lba), mackey)
+    if args.action == "show":
+        print(current)
+        return 0
+    if args.action == "bump":
+        new = current + 1
+        write_sector(args.device, hdr.seq_lba, pack_seq(new, mackey))
+        write_sector(args.device, hdr.seq_lba_mirror, pack_seq(new, mackey))
+        if args.state:
+            write_state(args.state, mackey, hdr.token_uuid, new)
+        print(new)
+        return 0
+    if args.action == "sync":
+        if not args.state:
+            raise TokenError("sync 에는 --state 가 필요합니다.")
+        write_state(args.state, mackey, hdr.token_uuid, current)
+        print(current)
+        return 0
+    raise TokenError("알 수 없는 동작: %s" % args.action)
+
+
+def cmd_backup(args):
+    hdr = Header.unpack(read_sector(args.device, 0))
+    if os.path.exists(args.image) and not args.force:
+        raise TokenError("%s 가 이미 있습니다. --force 로 덮어쓰세요." % args.image)
+    data = read_sector(args.device, 0, FLOPPY_SECTORS)
+    fd = os.open(args.image, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    sys.stderr.write(
+        "%s 로 전체 이미지(%d 바이트)를 백업했습니다. 토큰 UUID %s\n"
+        "경고: 이 파일은 토큰과 동등한 비밀값입니다. 오프라인 매체에 두고 "
+        "접근 권한을 0600으로 유지하세요.\n"
+        % (args.image, len(data), uuid.UUID(bytes=hdr.token_uuid)))
+    return 0
+
+
+def cmd_restore(args):
+    size = os.path.getsize(args.image)
+    if size != FLOPPY_BYTES:
+        raise TokenError("이미지 크기가 %d 바이트입니다 (기대 %d)."
+                         % (size, FLOPPY_BYTES))
+    with open(args.image, "rb") as fh:
+        data = fh.read()
+    Header.unpack(data[:SECTOR])
+    check_target(args.device, allow_create=True, force=True)
+    write_sector(args.device, 0, data)
+    sys.stderr.write("%s 에 이미지를 복원했습니다.\n" % args.device)
+    sys.stderr.write(
+        "주의: 복원본과 원본이 함께 존재하면 부팅 카운터가 엇갈려 "
+        "복제 경고가 발생할 수 있습니다. 하나만 사용하고 "
+        "'seq sync' 로 상태 파일을 맞추세요.\n")
+    return 0
+
+
+def cmd_scan(args):
+    found = []
+    for name in sorted(os.listdir("/sys/block")):
+        sys_path = "/sys/block/%s" % name
+        dev = "/dev/%s" % name
+        try:
+            with open(sys_path + "/size") as fh:
+                sectors = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+        if sectors == 0 or sectors > args.max_sectors:
+            continue
+        if not os.path.exists(dev):
+            continue
+        try:
+            hdr = Header.unpack(read_sector(dev, 0))
+        except (TokenError, OSError):
+            continue
+        found.append((dev, hdr, sectors))
+    for dev, hdr, sectors in found:
+        print("%s\t%d섹터\t%s\t%s"
+              % (dev, sectors, uuid.UUID(bytes=hdr.token_uuid), hdr.label))
+    if not found:
+        sys.stderr.write("VIVE 토큰을 찾지 못했습니다.\n")
+        return 1
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(
+        prog="vive-floppy-token",
+        description="플로피 원시 섹터 기반 부팅 토큰 관리")
+    sub = p.add_subparsers(dest="cmd")
+
+    def add_dev(sp, help_text="토큰 장치 또는 이미지 파일 (예: /dev/sda, token.img)"):
+        sp.add_argument("device", help=help_text)
+
+    sp = sub.add_parser("format", help="토큰을 새로 만든다 (전체 덮어씀)")
+    add_dev(sp)
+    sp.add_argument("--label", default="VIVE-BOOT-TOKEN", help="최대 32바이트 라벨")
+    sp.add_argument("--shards", type=int, default=DEFAULT_SHARDS,
+                    help="흩어 기록할 키 조각 수 (기본 %d)" % DEFAULT_SHARDS)
+    sp.add_argument("--iter", type=int, default=DEFAULT_ITER,
+                    help="PBKDF2 반복 수 (기본 %d)" % DEFAULT_ITER)
+    sp.add_argument("--pin", help="PIN을 인자로 전달 (스크립트 용도)")
+    sp.add_argument("--ask-pin", action="store_true", help="PIN을 입력받는다")
+    sp.add_argument("--state", help="/boot 상태 파일 경로도 함께 기록")
+    sp.add_argument("--print-passphrase", action="store_true",
+                    help="LUKS 암호문을 stdout으로 출력")
+    sp.add_argument("--force", action="store_true", help="안전장치 무시")
+    sp.set_defaults(func=cmd_format)
+
+    sp = sub.add_parser("info", help="헤더 내용을 보여준다 (비밀값 제외)")
+    add_dev(sp)
+    sp.set_defaults(func=cmd_info)
+
+    sp = sub.add_parser("verify", help="헤더/조각/카운터 무결성 검사")
+    add_dev(sp)
+    sp.add_argument("--pin")
+    sp.add_argument("--state", help="비교할 /boot 상태 파일")
+    sp.set_defaults(func=cmd_verify)
+
+    sp = sub.add_parser("derive", help="LUKS 암호문을 계산해 출력")
+    add_dev(sp)
+    sp.add_argument("--pin")
+    sp.add_argument("--no-newline", action="store_true")
+    sp.set_defaults(func=cmd_derive)
+
+    sp = sub.add_parser("seq", help="부팅 카운터 조회/증가/동기화")
+    sp.add_argument("action", choices=["show", "bump", "sync"])
+    add_dev(sp)
+    sp.add_argument("--pin")
+    sp.add_argument("--state", help="/boot 상태 파일 경로")
+    sp.set_defaults(func=cmd_seq)
+
+    sp = sub.add_parser("backup", help="토큰 전체를 이미지 파일로 백업")
+    add_dev(sp)
+    sp.add_argument("image")
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_backup)
+
+    sp = sub.add_parser("restore", help="이미지 파일을 토큰 매체로 복원")
+    sp.add_argument("image")
+    add_dev(sp)
+    sp.set_defaults(func=cmd_restore)
+
+    sp = sub.add_parser("scan", help="연결된 장치에서 토큰을 찾는다")
+    sp.add_argument("--max-sectors", type=int, default=8192,
+                    help="이 섹터 수보다 큰 장치는 건너뛴다 (기본 8192)")
+    sp.set_defaults(func=cmd_scan)
+
+    args = p.parse_args(argv)
+    if not getattr(args, "func", None):
+        p.print_help()
+        return 2
+    try:
+        return args.func(args)
+    except TokenError as exc:
+        sys.stderr.write("오류: %s\n" % exc)
+        return 1
+    except PermissionError as exc:
+        sys.stderr.write("오류: 권한 부족 - %s (sudo 가 필요할 수 있습니다)\n" % exc)
+        return 1
+    except KeyboardInterrupt:
+        sys.stderr.write("\n중단되었습니다.\n")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
