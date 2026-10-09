@@ -65,6 +65,13 @@ done
 command -v plymouth-set-default-theme >/dev/null \
     || die "plymouth 가 없습니다:  sudo apt install -y plymouth plymouth-themes"
 
+# 이 테마는 ModuleName=script 를 쓴다. 플러그인이 없으면 plymouth 는 조용히
+# 내장 기본 테마로 떨어진다 (테마는 바뀌었는데 화면은 그대로인 증상).
+ls /usr/lib/*/plymouth/script.so >/dev/null 2>&1 \
+    || die "plymouth 의 script 플러그인(script.so) 이 없습니다:
+       sudo apt install -y plymouth-themes
+     (이게 없으면 테마를 지정해도 내장 기본 테마가 뜹니다)"
+
 if [[ $MODE == uninstall ]]; then
     back="$(cat "$SAVED" 2>/dev/null || echo)"
     if [[ -n $back ]]; then

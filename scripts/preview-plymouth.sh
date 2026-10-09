@@ -48,21 +48,37 @@ plymouth quit
 sleep 1
 
 echo
-echo "===== 테마 스크립트 오류 ====="
+echo "===== 플러그인 / 테마 적재 ====="
+# 테마가 안 뜨는 원인은 대개 여기서 드러난다. load_built_in_theme 이 보이면
+# 우리 테마를 못 읽고 내장 기본 테마로 떨어진 것이다 (보통 script 플러그인 없음).
 if [[ -s $LOG ]]; then
-    if grep -inE 'error|cannot|unable|failed|no such|syntax|expected|undefined' "$LOG" \
-        | grep -viE 'no such file or directory: /run/plymouth' | head -30; then
-        :
-    fi
-    grep -icE 'error|cannot|unable|failed|syntax' "$LOG" >/dev/null || echo "  (오류 없음)"
-    echo
-    echo "===== 읽어 들인 테마 ====="
-    grep -iE 'theme|\.script|ImageDir|loading' "$LOG" | head -10
-    echo
-    echo "전체 로그: $LOG  ($(wc -l < "$LOG") 줄)"
+    grep -inE 'plugin|load_theme|built_in|built-in|\.so|ModuleName|ImageDir|ScriptFile|get_theme_path|splash' \
+        "$LOG" | head -30
 else
     echo "  로그가 비었습니다 ($LOG). plymouthd 가 아예 못 떴을 수 있습니다."
 fi
+
+echo
+echo "===== 오류로 보이는 줄 ====="
+if [[ -s $LOG ]]; then
+    found=$(grep -inE 'error|cannot|unable|failed|not found|syntax|expected|undefined|no such' "$LOG" \
+        | grep -viE 'plymouthd\.defaults|/run/plymouth' | head -30)
+    if [[ -n $found ]]; then echo "$found"; else echo "  (없음)"; fi
+fi
+
+echo
+echo "===== 설치된 plymouth 플러그인 ====="
+ls /usr/lib/*/plymouth/*.so 2>/dev/null | sed 's|.*/|  |' || echo "  (찾지 못함)"
+if ! ls /usr/lib/*/plymouth/script.so >/dev/null 2>&1; then
+    cat <<MISSING
+
+  script.so 가 없습니다. 이 테마는 script 모듈을 쓰므로 반드시 필요합니다:
+      sudo apt install -y plymouth-themes
+MISSING
+fi
+
+echo
+echo "전체 로그: $LOG  ($(wc -l < "$LOG" 2>/dev/null || echo 0) 줄)"
 
 cat <<TIP
 

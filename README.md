@@ -48,6 +48,12 @@ sudo scripts/install-plymouth-theme.sh
 sudo reboot
 ```
 
+`plymouth-themes` 가 꼭 필요하다. 이 테마는 `ModuleName=script` 를 쓰는데,
+script 플러그인(`/usr/lib/*/plymouth/script.so`) 이 없으면 plymouth 는 조용히
+내장 기본 테마로 떨어진다. 테마는 바뀌었는데 화면은 그대로인 증상이 나고,
+디버그 로그에 `load_built_in_theme: Loading built-in theme` 이 찍힌다.
+설치 스크립트가 미리 확인한다.
+
 부팅 스플래시 자리는 원래 plymouth 것이다. 거기에 systemd 서비스를 끼워 넣으려
 하면 plymouth 와 화면(DRM) 을 두고 다투게 되고, 그래서 아무것도 안 보이거나
 부팅이 막힌다. 싸우지 말고 **plymouth 가 우리 인트로를 재생하게** 하면 된다.
