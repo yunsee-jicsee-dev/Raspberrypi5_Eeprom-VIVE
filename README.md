@@ -23,10 +23,14 @@ sudo scripts/install-bootintro.sh
 
 설치 스크립트가 `systemctl get-default` 를 보고 둘 중 하나를 고른다.
 
-**데스크톱으로 부팅하는 기기** (`graphical.target`) — 로그인해서 바탕화면이 뜬 뒤
+**데스크톱으로 부팅하는 기기** (`graphical.target`) — 로그인 세션이 시작되자마자
 전체화면 창으로 재생한다. `~/.config/autostart/rpi5-bootintro.desktop` 이 들어간다.
 데스크톱이 떠 있으면 컴포지터(Wayland) 가 화면을 쥐고 있어서 `/dev/fb0` 에 써 봐야
 아무것도 안 보이기 때문에, 이쪽은 프레임버퍼를 쓰지 않는다.
+
+바탕화면이 잠깐 비치지 않도록, 창을 연 직후 검은 화면을 한 번 그려서 먼저 덮는다
+(Wayland 는 첫 `flip()` 전까지 서피스를 화면에 올리지 않는다). `--delay` 를 줘도
+그동안 바탕화면이 아니라 검은 화면이 보인다.
 
 **콘솔/헤드리스 기기** — `rpi5-bootintro.service` 가 `multi-user.target`,
 `graphical.target`, `display-manager.service` 가 **다 올라온 뒤에** 돈다.
@@ -75,7 +79,8 @@ python3 bootintro.py --fb-geometry 1920x1080@32 --fb-stride 7680
 ```
 
 주요 옵션: `--fps`(기본 30), `--size`(인트로 원본, 기본 400x240),
-`--max-scale`(확대 배율 상한), `--delay`(재생 전 대기), `--keep-cursor`, `--no-blank`.
+`--max-scale`(확대 배율 상한), `--delay`(재생 전 대기), `--wait-display`(세션이
+뜰 때까지 창 열기 재시도), `--keep-cursor`, `--no-blank`.
 16bpp(RGB565) 와 32bpp(XRGB8888) 프레임버퍼를 지원한다.
 
 ## 메모

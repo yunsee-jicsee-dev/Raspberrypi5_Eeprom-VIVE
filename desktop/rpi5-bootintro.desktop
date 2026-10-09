@@ -1,11 +1,17 @@
 [Desktop Entry]
-# 데스크톱으로 부팅하는 기기용. 로그인해서 바탕화면이 뜬 다음 전체화면으로 한 번 재생한다.
+# 데스크톱으로 부팅하는 기기용. 로그인 세션이 시작되자마자 전체화면으로 한 번 재생한다.
+#
+# 바탕화면보다 먼저 화면을 덮는 게 중요하다. 창을 만들어도 첫 flip 전까지는
+# Wayland 가 서피스를 올려 주지 않으므로, bootintro.py 는 창을 열자마자 검은
+# 화면을 한 번 그려서 바탕화면이 비치지 않게 한다. --delay 를 주면 그 검은 화면
+# 상태로 기다린다 (바탕화면이 드러나지 않는다).
+#
 # 데스크톱이 떠 있으면 컴포지터가 화면을 쥐고 있어서 /dev/fb0 로는 아무것도 안 보인다.
 # 설치 위치: ~/.config/autostart/rpi5-bootintro.desktop
 Type=Application
 Name=Raspberry Pi 5 boot intro
 Comment=부팅 인트로를 전체화면으로 재생
-Exec=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display sdl --fullscreen --delay 1.5 --fps 30 --quiet
+Exec=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display sdl --fullscreen --wait-display 20 --fps 30 --quiet
 Terminal=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true

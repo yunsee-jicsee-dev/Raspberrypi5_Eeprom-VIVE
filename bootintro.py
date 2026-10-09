@@ -209,6 +209,19 @@ class SdlOutput:
             self.dest = (0, 0)
         self.scale = scale
         pygame.display.set_caption("Raspberry Pi 5 부팅 인트로")
+        self.cover()
+
+    def cover(self):
+        """검은 화면을 바로 띄운다.
+
+        Wayland 는 첫 버퍼 커밋 전까지 서피스를 화면에 올리지 않는다. 창만 만들고
+        가만히 있으면 그 사이 바탕화면이 그대로 보이므로, 만들자마자 한 번 덮는다.
+        더블 버퍼라 두 번 flip 해야 양쪽 버퍼가 다 검어진다.
+        """
+        for _ in range(2):
+            self.win.fill((0, 0, 0))
+            pygame.display.flip()
+        pygame.event.pump()
 
     def show(self, canvas):
         if self._zoom is None:
@@ -259,6 +272,19 @@ def console_cursor(show):
     """콘솔 커서가 인트로 위에서 깜빡이지 않게."""
     _write_quietly("/sys/class/graphics/fbcon/cursor_blink", "1" if show else "0")
     _write_quietly("/dev/tty0", "\033[?25h" if show else "\033[2J\033[H\033[?25l")
+
+
+def open_window(canvas_size, scale, fullscreen, max_scale, wait=0.0):
+    """창 열기. 세션이 아직 안 뜬 상태면 wait 초까지 다시 시도한다."""
+    deadline = time.monotonic() + max(0.0, wait)
+    while True:
+        try:
+            return SdlOutput(canvas_size, scale, fullscreen, max_scale)
+        except pygame.error:
+            if time.monotonic() >= deadline:
+                raise
+            pygame.display.quit()
+            time.sleep(0.25)
 
 
 def desktop_session():
@@ -334,7 +360,9 @@ def build_parser():
     p.add_argument("--windowed", dest="fullscreen", action="store_false",
                    help="전체화면 대신 창으로")
     p.add_argument("--delay", type=float, default=0.0, metavar="SEC",
-                   help="재생 전에 이만큼 기다리기 (데스크톱이 다 그려질 때까지 등)")
+                   help="재생 전에 이만큼 기다리기 (그동안 화면은 이미 검게 덮인 상태)")
+    p.add_argument("--wait-display", type=float, default=0.0, metavar="SEC",
+                   help="창을 열지 못하면 이만큼까지 다시 시도 (로그인 직후용)")
     p.add_argument("--fps", type=int, default=30, help="프레임레이트 (기본 30)")
     p.add_argument("--loop", action="store_true", help="끝나면 처음부터 다시")
     p.add_argument("--wait-fb", type=float, default=0.0, metavar="SEC",
@@ -388,8 +416,9 @@ def main(argv=None):
         elif mode == "frames":
             out = FrameDumpOutput(a.save_frames or "frames", a.every)
         else:
-            out = SdlOutput((cw, ch), a.window_scale, fullscreen, a.max_scale)
-    except FramebufferError as e:
+            out = open_window((cw, ch), a.window_scale, fullscreen,
+                              a.max_scale, a.wait_display)
+    except (FramebufferError, pygame.error) as e:
         print(e, file=sys.stderr)
         return 0 if a.optional else 1
 
