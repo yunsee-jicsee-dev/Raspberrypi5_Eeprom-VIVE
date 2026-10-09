@@ -307,6 +307,38 @@ class TestWriteFailures(TokenTestCase):
         self.assertIn("부팅할 수 없습니다", str(cm.exception))
 
 
+class TestCompactMode(TokenTestCase):
+    """상한 트랙이 섞인 디스켓용 간이 모드 (--compact --at N)."""
+
+    def test_places_shards_contiguously_at_given_sector(self):
+        self.format_token("--compact", "--at", "15")
+        hdr = vt.Header.unpack(vt.read_sector(self.img, 0))
+        self.assertEqual(hdr.shard_lbas, [15, 16, 17, 18, 19, 20])
+        self.assertEqual((hdr.seq_lba, hdr.seq_lba_mirror), (1, 2))
+
+    def test_skips_full_random_fill(self):
+        res = self.format_token("--compact")
+        self.assertNotIn("전체 2880 섹터", res.stderr)
+        self.assertIn("간이 모드", res.stderr)
+
+    def test_compact_token_verifies_and_derives(self):
+        self.format_token("--compact", "--at", "15")
+        self.assertEqual(run_tool("verify", self.img).returncode, 0)
+        self.assertEqual(len(run_tool("derive", self.img).stdout.strip()), 64)
+
+    def test_rejects_at_overlapping_header_or_counters(self):
+        res = run_tool("format", self.img, "--iter", "10000",
+                       "--compact", "--at", "2")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("3 이상", res.stderr)
+
+    def test_rejects_at_past_end_of_disk(self):
+        res = run_tool("format", self.img, "--iter", "10000",
+                       "--compact", "--at", "2877")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("넘습니다", res.stderr)
+
+
 class TestKdfVectors(unittest.TestCase):
     """파생식이 바뀌면 기존 토큰이 전부 못 쓰게 되므로 고정 벡터로 묶어 둔다.
 

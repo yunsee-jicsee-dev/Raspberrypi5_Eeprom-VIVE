@@ -110,6 +110,17 @@ PYEOF
 	&& ok "카운터 원본/사본 모두 쉘이 갱신" \
 	|| no "카운터 사본 불일치: $MIRROR_OK"
 
+# 간이 모드(--compact) 토큰도 부팅 쪽 쉘이 똑같이 읽어야 한다.
+IMGK="$TMP/k.img"
+python3 "$TOOL" format "$IMGK" --iter "$ITER" --compact --at 15 >/dev/null 2>&1
+mkconf "$TMP/k.conf" "$IMGK"
+mkdir -p "$TMP/k.run"
+PY_KEY_K=$(python3 "$TOOL" derive --no-newline "$IMGK")
+SH_KEY_K=$(run_keyscript "$TMP/k.conf" "$TMP/k.run")
+[ -n "$SH_KEY_K" ] && [ "$SH_KEY_K" = "$PY_KEY_K" ] \
+	&& ok "간이 모드(--compact --at 15) 토큰도 쉘 == 파이썬" \
+	|| no "간이 모드 암호문 불일치" "$(cat "$TMP/keyscript.err")"
+
 # ---------------------------------------------------------------------------
 echo "# 3. PIN 있는 토큰"
 # ---------------------------------------------------------------------------

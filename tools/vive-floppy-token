@@ -294,6 +294,21 @@ def collect_ikm(path, hdr):
     return b"".join(shards)
 
 
+def compact_lbas(count, at):
+    """간이 배치: 조각을 섹터 <at> 부터 연속으로 둔다. 카운터는 1, 2 그대로.
+
+    헤더에 LBA 표가 있으므로 부팅 쪽(키스크립트)은 바꿀 필요가 없다.
+    대신 조각이 한 트랙 근처에 몰려 있어 그 트랙이 상하면 토큰 전체를
+    잃는다. 백업 이미지가 사실상 필수다.
+    """
+    if at < 3:
+        raise TokenError("--at 은 3 이상이어야 합니다 (0 은 헤더, 1-2 는 카운터).")
+    if at + count > FLOPPY_SECTORS:
+        raise TokenError("--at %d 부터 %d 개를 두면 디스켓 끝(%d)을 넘습니다."
+                         % (at, count, FLOPPY_SECTORS))
+    return list(range(at, at + count)), 1, 2
+
+
 def pick_shard_lbas(count):
     """shard를 디스크 전체에 흩어 배치한다.
 
@@ -451,7 +466,10 @@ def cmd_format(args):
         pin = ask_pin(True, args.pin, confirm=True)
 
     salt = secrets.token_bytes(32)
-    shard_lbas, seq_lba, seq_mirror = pick_shard_lbas(args.shards)
+    if args.compact:
+        shard_lbas, seq_lba, seq_mirror = compact_lbas(args.shards, args.at)
+    else:
+        shard_lbas, seq_lba, seq_mirror = pick_shard_lbas(args.shards)
     flags = Header.FLAG_SEQ
     if pin:
         flags |= Header.FLAG_PIN
@@ -468,11 +486,17 @@ def cmd_format(args):
     # 1) 전체 섹터를 난수로 덮는다. 빈 영역과 키 영역이 구별되지 않게 한다.
     #    청크마다 fsync 한다. 느려지는 대신 오류가 '그 청크'에서 잡히므로
     #    불량 섹터의 위치를 바로 알려 줄 수 있다.
-    sys.stderr.write("전체 %d 섹터를 난수로 채웁니다...\n" % FLOPPY_SECTORS)
-    chunk = 64
-    for base in range(0, FLOPPY_SECTORS, chunk):
-        n = min(chunk, FLOPPY_SECTORS - base)
-        write_sector(args.device, base, secrets.token_bytes(n * SECTOR))
+    #    간이 모드(--compact)는 이 단계를 건너뛴다. 상한 트랙이 섞인 디스켓도
+    #    필요한 몇 섹터만 멀쩡하면 토큰이 된다.
+    if args.compact:
+        sys.stderr.write("간이 모드: 섹터 0-2, %d-%d 만 씁니다 (난수 채움 생략)\n"
+                         % (shard_lbas[0], shard_lbas[-1]))
+    else:
+        sys.stderr.write("전체 %d 섹터를 난수로 채웁니다...\n" % FLOPPY_SECTORS)
+        chunk = 64
+        for base in range(0, FLOPPY_SECTORS, chunk):
+            n = min(chunk, FLOPPY_SECTORS - base)
+            write_sector(args.device, base, secrets.token_bytes(n * SECTOR))
 
     # 2) 키 조각, 카운터, 헤더(마지막)
     shards = [secrets.token_bytes(DEFAULT_SHARD_LEN) for _ in shard_lbas]
@@ -667,6 +691,11 @@ def main(argv=None):
     sp.add_argument("--pin", help="PIN을 인자로 전달 (스크립트 용도)")
     sp.add_argument("--ask-pin", action="store_true", help="PIN을 입력받는다")
     sp.add_argument("--state", help="/boot 상태 파일 경로도 함께 기록")
+    sp.add_argument("--compact", action="store_true",
+                    help="간이 모드: 전체 난수 채움 없이 몇 섹터만 쓴다 "
+                         "(상한 트랙이 있는 디스켓용)")
+    sp.add_argument("--at", type=int, default=15,
+                    help="--compact 에서 조각을 둘 시작 섹터 (기본 15)")
     sp.add_argument("--print-passphrase", action="store_true",
                     help="LUKS 암호문을 stdout으로 출력")
     sp.add_argument("--force", action="store_true", help="안전장치 무시")
