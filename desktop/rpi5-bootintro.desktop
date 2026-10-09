@@ -1,0 +1,11 @@
+[Desktop Entry]
+# 데스크톱으로 부팅하는 기기용. 로그인해서 바탕화면이 뜬 다음 전체화면으로 한 번 재생한다.
+# 데스크톱이 떠 있으면 컴포지터가 화면을 쥐고 있어서 /dev/fb0 로는 아무것도 안 보인다.
+# 설치 위치: ~/.config/autostart/rpi5-bootintro.desktop
+Type=Application
+Name=Raspberry Pi 5 boot intro
+Comment=부팅 인트로를 전체화면으로 재생
+Exec=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display sdl --fullscreen --delay 1.5 --fps 30 --quiet
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

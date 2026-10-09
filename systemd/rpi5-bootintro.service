@@ -1,20 +1,17 @@
-# 부팅할 때 라즈베리파이 5 인트로를 모니터(프레임버퍼) 에 한 번 재생한다.
+# 부팅이 끝나고 — 모든 서비스가 올라온 다음 — 인트로를 한 번 재생한다 (콘솔/헤드리스).
+# 데스크톱으로 부팅하는 기기는 이 서비스 대신 desktop/rpi5-bootintro.desktop 을 쓴다.
 # 설치:  sudo scripts/install-bootintro.sh
 [Unit]
-Description=Raspberry Pi 5 boot intro
+Description=Raspberry Pi 5 boot intro (console)
 Documentation=https://github.com/yunsee-jicsee-dev/Raspberrypi5_Eeprom-VIVE
-# 그래픽 드라이버가 올라온 뒤에, 로그인 화면/콘솔이 뜨기 전에 끼어든다.
-After=local-fs.target systemd-udev-settle.service
-Wants=systemd-udev-settle.service
-Before=display-manager.service getty@tty1.service
+# 부팅 과정에 끼어들지 않고, 올라올 서비스가 다 올라온 뒤에 돈다.
+After=multi-user.target graphical.target display-manager.service systemd-user-sessions.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/rpi5-bootintro
 ExecStart=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display fb --wait-fb 10 --fps 30 --optional --quiet
-# 인트로는 3.7초. 그 사이 부팅이 기다리므로 넉넉히 잡되 멈추지는 않게.
-TimeoutStartSec=30
-Nice=-5
+TimeoutStartSec=60
 StandardOutput=journal
 StandardError=journal
 

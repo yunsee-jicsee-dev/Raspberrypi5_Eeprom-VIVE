@@ -182,19 +182,41 @@ class FbOutput:
 
 
 class SdlOutput:
-    """개발용. 창을 띄워서 똑같은 연출을 본다."""
+    """창 또는 전체화면.
+
+    데스크톱(Wayland/X) 이 떠 있으면 컴포지터가 화면을 쥐고 있어서 /dev/fb0 에
+    써 봐야 아무것도 안 보인다. 그래서 로그인 뒤에 트는 경우엔 이쪽을 쓴다.
+    """
 
     name = "sdl"
 
-    def __init__(self, canvas_size, scale=3):
+    def __init__(self, canvas_size, scale=3, fullscreen=False, max_scale=0):
         cw, ch = canvas_size
         pygame.display.init()
-        self.win = pygame.display.set_mode((cw * scale, ch * scale))
-        pygame.display.set_caption("Raspberry Pi 5 부팅 인트로")
+        if fullscreen:
+            info = pygame.display.Info()
+            sw, sh = info.current_w, info.current_h
+            self.win = pygame.display.set_mode((sw, sh), pygame.FULLSCREEN | pygame.NOFRAME)
+            pygame.mouse.set_visible(False)
+            scale = max(1, min(sw // cw, sh // ch))
+            if max_scale:
+                scale = min(scale, max_scale)
+            self._zoom = pygame.Surface((cw * scale, ch * scale))
+            self.dest = ((sw - cw * scale) // 2, (sh - ch * scale) // 2)
+        else:
+            self.win = pygame.display.set_mode((cw * scale, ch * scale))
+            self._zoom = None
+            self.dest = (0, 0)
         self.scale = scale
+        pygame.display.set_caption("Raspberry Pi 5 부팅 인트로")
 
     def show(self, canvas):
-        pygame.transform.scale(canvas, self.win.get_size(), self.win)
+        if self._zoom is None:
+            pygame.transform.scale(canvas, self.win.get_size(), self.win)
+        else:
+            pygame.transform.scale(canvas, self._zoom.get_size(), self._zoom)
+            self.win.fill((0, 0, 0))
+            self.win.blit(self._zoom, self.dest)
         pygame.display.flip()
         for e in pygame.event.get():
             if e.type in (pygame.QUIT, pygame.KEYDOWN):
@@ -237,6 +259,11 @@ def console_cursor(show):
     """콘솔 커서가 인트로 위에서 깜빡이지 않게."""
     _write_quietly("/sys/class/graphics/fbcon/cursor_blink", "1" if show else "0")
     _write_quietly("/dev/tty0", "\033[?25h" if show else "\033[2J\033[H\033[?25l")
+
+
+def desktop_session():
+    """지금 데스크톱(Wayland/X) 이 떠 있는지. 떠 있으면 프레임버퍼는 안 보인다."""
+    return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
 
 
 def wait_for_fb(path, seconds):
@@ -302,6 +329,12 @@ def build_parser():
                    help=f"인트로 원본 크기 (기본 {CANVAS_W}x{CANVAS_H})")
     p.add_argument("--max-scale", type=int, default=0, help="확대 배율 상한 (0=제한 없음)")
     p.add_argument("--window-scale", type=int, default=3, help="--display sdl 의 창 배율")
+    p.add_argument("--fullscreen", dest="fullscreen", action="store_true", default=None,
+                   help="--display sdl 을 전체화면으로 (데스크톱 세션용)")
+    p.add_argument("--windowed", dest="fullscreen", action="store_false",
+                   help="전체화면 대신 창으로")
+    p.add_argument("--delay", type=float, default=0.0, metavar="SEC",
+                   help="재생 전에 이만큼 기다리기 (데스크톱이 다 그려질 때까지 등)")
     p.add_argument("--fps", type=int, default=30, help="프레임레이트 (기본 30)")
     p.add_argument("--loop", action="store_true", help="끝나면 처음부터 다시")
     p.add_argument("--wait-fb", type=float, default=0.0, metavar="SEC",
@@ -322,17 +355,23 @@ def main(argv=None):
     k = 2 if cw >= 320 else 1   # 글자 배율: LCD 처럼 작은 화면은 1
 
     os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-    if a.display in ("fb", "frames") or (a.display == "auto" and not os.environ.get("DISPLAY")):
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
     mode = a.display
     if a.save_frames:
         mode = "frames"
+    on_desktop = desktop_session()
     if mode == "auto":
-        if a.wait_fb:
-            wait_for_fb(a.fbdev, a.wait_fb)
-        mode = "fb" if os.path.exists(a.fbdev) else "sdl"
-    elif mode == "fb" and a.wait_fb and not wait_for_fb(a.fbdev, a.wait_fb):
+        if on_desktop:
+            mode = "sdl"          # 컴포지터가 화면을 쥐고 있으니 창으로
+        else:
+            if a.wait_fb:
+                wait_for_fb(a.fbdev, a.wait_fb)
+            mode = "fb" if os.path.exists(a.fbdev) else "sdl"
+    fullscreen = on_desktop if a.fullscreen is None else a.fullscreen
+    if mode in ("fb", "frames") or (mode == "sdl" and not on_desktop):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+
+    if mode == "fb" and a.wait_fb and not wait_for_fb(a.fbdev, a.wait_fb):
         print(f"{a.fbdev} 가 {a.wait_fb}초 안에 안 나타났어요", file=sys.stderr)
         return 0 if a.optional else 1
 
@@ -349,10 +388,13 @@ def main(argv=None):
         elif mode == "frames":
             out = FrameDumpOutput(a.save_frames or "frames", a.every)
         else:
-            out = SdlOutput((cw, ch), a.window_scale)
+            out = SdlOutput((cw, ch), a.window_scale, fullscreen, a.max_scale)
     except FramebufferError as e:
         print(e, file=sys.stderr)
         return 0 if a.optional else 1
+
+    if a.delay > 0:
+        time.sleep(a.delay)
 
     t0 = time.monotonic()
     try:
