@@ -30,6 +30,12 @@ if [ -r /etc/viveboot/gate ]; then
 	cp -a /etc/viveboot/gate "$DESTDIR/etc/viveboot/"
 fi
 
+# 부팅 중에도 udev 가 토큰 디스켓을 훑지 않게 한다 (상한 트랙에서 몇 분씩 멈춤).
+if [ -r /etc/udev/rules.d/59-viveboot-floppy.rules ]; then
+	mkdir -p "$DESTDIR/etc/udev/rules.d"
+	cp -a /etc/udev/rules.d/59-viveboot-floppy.rules "$DESTDIR/etc/udev/rules.d/"
+fi
+
 # 3) openssl (PBKDF2/HMAC). libcrypto 는 copy_exec 가 따라온다.
 copy_exec /usr/bin/openssl /usr/bin
 if [ -r /etc/ssl/openssl.cnf ]; then

@@ -13,6 +13,7 @@ HOOKDIR=$DESTDIR$PREFIX/usr/share/initramfs-tools/hooks
 BOTTOMDIR=$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-bottom
 TOPDIR=$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-top
 UNITDIR=$DESTDIR$PREFIX/lib/systemd/system
+UDEVDIR=$DESTDIR$PREFIX/etc/udev/rules.d
 DOCDIR=$DESTDIR$PREFIX/usr/share/doc/viveboot
 
 log() { printf 'install: %s\n' "$*" >&2; }
@@ -22,7 +23,7 @@ log() { printf 'install: %s\n' "$*" >&2; }
 	exit 1
 }
 
-for d in "$BIN" "$LIBDIR" "$CONFDIR" "$HOOKDIR" "$BOTTOMDIR" "$TOPDIR" "$UNITDIR" "$DOCDIR"; do
+for d in "$BIN" "$LIBDIR" "$CONFDIR" "$HOOKDIR" "$BOTTOMDIR" "$TOPDIR" "$UNITDIR" "$UDEVDIR" "$DOCDIR"; do
 	mkdir -p "$d"
 done
 
@@ -39,6 +40,8 @@ install -m 0755 "$SRC/initramfs/scripts/local-bottom/viveboot" \
 	"$BOTTOMDIR/viveboot"
 install -m 0755 "$SRC/initramfs/scripts/local-top/viveboot-gate" \
 	"$TOPDIR/viveboot-gate"
+install -m 0644 "$SRC/udev/59-viveboot-floppy.rules" \
+	"$UDEVDIR/59-viveboot-floppy.rules"
 install -m 0644 "$SRC/systemd/viveboot-seqcheck.service" \
 	"$UNITDIR/viveboot-seqcheck.service"
 for f in "$SRC"/docs/*.md "$SRC/README.md"; do
@@ -68,6 +71,9 @@ if [ -z "$DESTDIR" ]; then
 	if [ -f /boot/firmware/config.txt ] \
 		&& ! grep -qE '^[[:space:]]*auto_initramfs=1' /boot/firmware/config.txt; then
 		log "경고: /boot/firmware/config.txt 에 auto_initramfs=1 이 없습니다"
+	fi
+	if command -v udevadm >/dev/null 2>&1; then
+		udevadm control --reload-rules || true
 	fi
 	if command -v systemctl >/dev/null 2>&1; then
 		systemctl daemon-reload || true

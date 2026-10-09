@@ -1,0 +1,14 @@
+# viveboot - 플로피 토큰 디스켓을 udev 가 훑지 않게 한다.
+#
+# 토큰 디스켓에는 파일시스템이 없다. 그런데 udev(60-persistent-storage.rules
+# 의 blkid)는 꽂힐 때마다 파일시스템을 찾느라 여러 위치를 읽고, 상한 트랙을
+# 만나면 커널이 재시도를 거듭해 몇 분씩 멈춘다. 부팅 중(initramfs)에도 같다.
+#
+# 1.44MB(2880섹터) 디스크만 골라 60-persistent-storage 를 건너뛰게 하고,
+# 데스크톱 자동 마운트(udisks)도 무시하게 한다. 토큰은 viveboot 가
+# /sys/block 과 원시 섹터로 직접 찾으므로 이 정보가 필요 없다.
+#
+# 59 번인 이유: 60-persistent-storage.rules 맨 앞의 플래그 검사보다 먼저 돌아야 한다.
+SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ATTR{size}=="2880", \
+  ENV{UDEV_DISABLE_PERSISTENT_STORAGE_RULES_FLAG}="1", \
+  ENV{UDISKS_IGNORE}="1"

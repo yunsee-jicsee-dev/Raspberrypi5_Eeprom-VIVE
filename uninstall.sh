@@ -33,6 +33,7 @@ rm -f "$DESTDIR$PREFIX/usr/bin/vive-floppy-token" \
 	"$DESTDIR$PREFIX/usr/bin/vive-luks-enroll" \
 	"$DESTDIR$PREFIX/usr/bin/vive-boot-mode" \
 	"$DESTDIR$PREFIX/usr/bin/vive-boot-gate" \
+	"$DESTDIR$PREFIX/etc/udev/rules.d/59-viveboot-floppy.rules" \
 	"$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-top/viveboot-gate" \
 	"$DESTDIR$PREFIX/usr/share/initramfs-tools/hooks/viveboot" \
 	"$DESTDIR$PREFIX/usr/share/initramfs-tools/scripts/local-bottom/viveboot" \
