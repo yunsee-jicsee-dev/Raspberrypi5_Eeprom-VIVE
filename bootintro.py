@@ -17,6 +17,7 @@ import array
 import fcntl
 import mmap
 import os
+import signal
 import struct
 import sys
 import time
@@ -287,6 +288,27 @@ def open_window(canvas_size, scale, fullscreen, max_scale, wait=0.0):
             time.sleep(0.25)
 
 
+def arm_watchdog(seconds):
+    """정해진 시간이 지나면 무조건 끝낸다.
+
+    이 프로그램은 부팅 중(display-manager 앞)에 돌기 때문에, 어디서든 멈추면
+    부팅 전체가 멈춘다. 드라이버가 안 돌려주든 화면이 안 잡히든, 시간이 되면
+    정리고 뭐고 바로 빠져나온다. 종료 코드는 0 이라 서비스가 실패로 뜨지 않는다.
+    """
+    if not seconds or not hasattr(signal, "SIGALRM"):
+        return
+
+    def bail(_signum, _frame):
+        try:
+            console_cursor(True)      # 커서는 살려 두고 가면 좋지만, 실패해도 그냥 간다
+        except Exception:
+            pass
+        os._exit(0)
+
+    signal.signal(signal.SIGALRM, bail)
+    signal.alarm(int(seconds))
+
+
 def desktop_session():
     """지금 데스크톱(Wayland/X) 이 떠 있는지. 떠 있으면 프레임버퍼는 안 보인다."""
     return bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
@@ -371,6 +393,8 @@ def build_parser():
     p.add_argument("--no-blank", action="store_true", help="끝나고 화면을 지우지 않기")
     p.add_argument("--save-frames", metavar="DIR", help="--display frames 의 저장 폴더")
     p.add_argument("--every", type=int, default=1, help="프레임 저장 간격")
+    p.add_argument("--max-seconds", type=float, default=0.0, metavar="SEC",
+                   help="이 시간이 지나면 무조건 종료 (0=제한 없음). 부팅용 안전장치")
     p.add_argument("--optional", action="store_true",
                    help="프레임버퍼가 없으면 조용히 넘어가기 (systemd 서비스용)")
     p.add_argument("--quiet", action="store_true", help="끝나고 요약 출력 안 함")
@@ -411,6 +435,7 @@ def open_fb(a, canvas_size, quiet):
 
 def main(argv=None):
     a = build_parser().parse_args(argv)
+    arm_watchdog(a.max_seconds)   # 다른 무엇보다 먼저
     cw, ch = a.size
     k = 2 if cw >= 320 else 1   # 글자 배율: LCD 처럼 작은 화면은 1
 

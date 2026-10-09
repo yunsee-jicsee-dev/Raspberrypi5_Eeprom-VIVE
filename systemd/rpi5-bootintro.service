@@ -20,11 +20,18 @@ Documentation=https://github.com/yunsee-jicsee-dev/Raspberrypi5_Eeprom-VIVE
 After=multi-user.target
 Before=display-manager.service getty@tty1.service
 
+# 부팅이 이 서비스 때문에 멈추는 일이 없도록 이중으로 막아 둔다.
+#   --max-seconds 20 : 프로그램이 스스로 끊는다 (종료 코드 0)
+#   TimeoutStartSec  : 그마저 안 되면 systemd 가 끊는다
+#   --optional       : 화면을 못 열면 조용히 넘어간다
+#
+# 그래도 부팅이 막히면, cmdline.txt 끝에 아래를 붙여 한 번만 건너뛸 수 있다:
+#   systemd.mask=rpi5-bootintro.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/rpi5-bootintro
-ExecStart=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display auto --wait-fb 10 --fps 30 --optional
-TimeoutStartSec=60
+ExecStart=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display auto --wait-fb 5 --fps 30 --max-seconds 20 --optional
+TimeoutStartSec=30
 StandardOutput=journal
 StandardError=journal
 

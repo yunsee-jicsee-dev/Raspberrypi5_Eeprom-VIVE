@@ -12,16 +12,40 @@
 | `bootintro.py` | 인트로 재생기. 프레임버퍼(`/dev/fb0`) 또는 전체화면 창 |
 | `systemd/rpi5-bootintro.service` | 기본. 데스크톱이 뜨기 전에 프레임버퍼로 재생 |
 | `desktop/rpi5-bootintro.desktop` | 대안. 로그인 세션 안에서 전체화면 창으로 재생 |
+| `scripts/try-intro.sh` | 설치하지 않고 화면에 나오는지만 확인 |
 | `scripts/install-bootintro.sh` | 설치/제거 |
 | `scripts/diagnose.sh` | 화면에 안 나올 때 원인 좁히기 |
 
 ## 부팅할 때 인트로 띄우기
 
+먼저 **설치하지 말고** 화면에 나오는지부터 본다. 콘솔(`Ctrl+Alt+F2`)에서:
+
 ```bash
 sudo apt install -y python3-pygame
+sudo scripts/try-intro.sh
+```
+
+kms 와 fb 로 차례로 재생해 보고, 보이는 쪽이 있으면 그때 설치한다:
+
+```bash
 sudo scripts/install-bootintro.sh
 sudo reboot
 ```
+
+### 부팅이 막히면
+
+`cmdline.txt` 한 줄 끝에 한 칸 띄고 붙이면 이 서비스만 건너뛰고 평소대로 부팅된다:
+
+```
+systemd.mask=rpi5-bootintro.service
+```
+
+부트 파티션은 FAT32 라서 SD 카드를 다른 컴퓨터(폰도 된다) 에 꽂아 고칠 수 있다.
+부팅된 뒤 `sudo scripts/install-bootintro.sh --uninstall` 로 제거하면 된다.
+
+서비스 쪽에도 안전장치를 걸어 뒀다. `--max-seconds 20` 으로 프로그램이 스스로
+끝나고, `TimeoutStartSec=30` 으로 systemd 가 한 번 더 끊고, `--optional` 이라
+화면을 못 열면 조용히 넘어간다. 부팅이 이것 때문에 멈추지 않는다.
 
 `rpi5-bootintro.service` 가 **`multi-user.target` 과 `display-manager.service`
 사이**에 들어간다. 여기가 유일하게 맞는 자리다.

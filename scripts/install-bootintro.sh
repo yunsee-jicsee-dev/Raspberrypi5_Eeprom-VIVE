@@ -102,6 +102,12 @@ if [[ $MODE == uninstall ]]; then
     exit 0
 fi
 
+if [[ $MODE == boot && ! -e /opt/rpi5-bootintro/bootintro.py ]]; then
+    echo "참고: 먼저 'sudo scripts/try-intro.sh' 로 화면에 나오는지 확인하시길 권합니다."
+    echo "      (부팅 경로에 넣기 전에 눈으로 보는 게 안전합니다.)"
+    echo
+fi
+
 command -v python3 >/dev/null || die "python3 가 없습니다."
 python3 -c "import pygame" 2>/dev/null \
     || die "pygame 이 없습니다:  sudo apt install -y python3-pygame"
@@ -146,6 +152,18 @@ else
 설치 완료 — 부팅 방식 (데스크톱이 뜨기 전에 재생).
 서비스가 multi-user.target 과 display-manager.service 사이에 들어갑니다.
 데스크톱은 인트로(3.7초) 가 끝난 뒤에 시작합니다.
+
+┌─ 부팅이 막히면 (이것만 기억하세요) ─────────────────────────┐
+│ SD/부트 파티션의 cmdline.txt 한 줄 끝에 한 칸 띄고 붙이면     │
+│ 이 서비스만 건너뛰고 평소대로 부팅됩니다:                     │
+│                                                              │
+│     systemd.mask=$UNIT                      │
+│                                                              │
+│ 부팅된 뒤 제거:  sudo $0 --uninstall  │
+└──────────────────────────────────────────────────────────────┘
+
+프로그램은 20초 안에 스스로 끝나고(--max-seconds), 화면을 못 열면 조용히
+건너뜁니다(--optional). 그래도 막히면 위 방법을 쓰세요.
 
 재부팅해서 확인하세요:
     sudo reboot
