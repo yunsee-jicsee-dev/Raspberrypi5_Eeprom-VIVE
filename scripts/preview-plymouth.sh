@@ -67,6 +67,22 @@ if [[ -s $LOG ]]; then
 fi
 
 echo
+echo "===== 그래픽 렌더러가 만들어졌는지 ====="
+if grep -q 'details forced' "$LOG" 2>/dev/null; then
+    cat <<SERIAL
+  시리얼 콘솔이 잡혀서 plymouth 가 텍스트(details) 모드를 강제했습니다.
+  그래픽 렌더러를 아예 안 만들기 때문에 어떤 테마를 지정해도 안 보입니다.
+  cmdline.txt 에 아래를 넣으세요 (설치 스크립트가 해 줍니다):
+      plymouth.ignore-serial-consoles
+SERIAL
+elif grep -q 'renderer type: 4294967295' "$LOG" 2>/dev/null; then
+    echo "  렌더러가 만들어지지 않았습니다 (renderer type 없음). 화면 장치를 못 잡았습니다."
+else
+    grep -iE 'renderer type|create_devices_for' "$LOG" 2>/dev/null | head -5 \
+        || echo "  (해당 줄 없음)"
+fi
+
+echo
 echo "===== 설치된 plymouth 플러그인 ====="
 ls /usr/lib/*/plymouth/*.so 2>/dev/null | sed 's|.*/|  |' || echo "  (찾지 못함)"
 if ! ls /usr/lib/*/plymouth/script.so >/dev/null 2>&1; then

@@ -48,11 +48,28 @@ sudo scripts/install-plymouth-theme.sh
 sudo reboot
 ```
 
-`plymouth-themes` 가 꼭 필요하다. 이 테마는 `ModuleName=script` 를 쓰는데,
-script 플러그인(`/usr/lib/*/plymouth/script.so`) 이 없으면 plymouth 는 조용히
-내장 기본 테마로 떨어진다. 테마는 바뀌었는데 화면은 그대로인 증상이 나고,
-디버그 로그에 `load_built_in_theme: Loading built-in theme` 이 찍힌다.
-설치 스크립트가 미리 확인한다.
+`ModuleName=script` 를 쓰므로 script 플러그인(`/usr/lib/*/plymouth/script.so`)
+이 있어야 한다. 설치 스크립트가 미리 확인한다.
+
+**시리얼 콘솔을 조심해야 한다.** 라즈베리파이는 `cmdline.txt` 에 기본으로
+`console=ttyAMA0,115200`(또는 `console=serial0`) 이 들어 있다. 이게 있으면
+plymouth 가
+
+```
+serial consoles detected, managing them with details forced
+creating devices for (renderer type: 4294967295)
+```
+
+하면서 **그래픽 렌더러를 아예 만들지 않고** 텍스트 모드로 간다. 어떤 테마를
+지정하든 화면에는 안 보이고 `load_built_in_theme` 으로 떨어진다. 커널
+파라미터 하나로 풀린다:
+
+```
+plymouth.ignore-serial-consoles
+```
+
+설치 스크립트가 `console=ttyAMA*/ttyS*/serial*` 을 찾으면 `splash` 와 함께
+자동으로 넣는다(백업을 남기고, 이미 있으면 건드리지 않는다).
 
 부팅 스플래시 자리는 원래 plymouth 것이다. 거기에 systemd 서비스를 끼워 넣으려
 하면 plymouth 와 화면(DRM) 을 두고 다투게 되고, 그래서 아무것도 안 보이거나

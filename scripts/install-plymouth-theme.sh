@@ -115,27 +115,42 @@ plymouth-set-default-theme "$NAME"
 echo "테마를 '$NAME' 로 바꿨습니다."
 rebuild_initramfs
 
-# ---- cmdline: plymouth 는 splash 가 있어야 화면에 뜬다 ----
+# ---- cmdline ----
+# plymouth 가 그래픽 스플래시를 띄우려면 두 가지가 필요하다.
+#   splash                        : 이게 없으면 기본 스플래시를 안 띄운다
+#   plymouth.ignore-serial-consoles : console=ttyAMA0 같은 시리얼 콘솔이 잡혀 있으면
+#       plymouth 가 "serial consoles detected, managing them with details forced" 하고
+#       렌더러를 아예 안 만든다 (텍스트 모드 강제). 라즈베리파이는 기본으로
+#       console=ttyAMA0,115200 또는 console=serial0 이 들어 있어서 거의 항상 해당된다.
 if [[ $TOUCH_CMDLINE == 1 ]]; then
     if f="$(find_cmdline)"; then
-        if grep -qw splash "$f"; then
-            echo "$f 에 splash 가 이미 있습니다."
-        else
+        want=()
+        grep -qw splash "$f" || want+=("splash")
+        if grep -qE 'console=(ttyAMA|ttyS|serial)' "$f" \
+            && ! grep -qw plymouth.ignore-serial-consoles "$f"; then
+            want+=("plymouth.ignore-serial-consoles")
+        fi
+
+        if (( ${#want[@]} )); then
             [[ -f "$f.plymouth.bak" ]] || cp -a "$f" "$f.plymouth.bak"
-            python3 - "$f" <<'PY'
+            python3 - "$f" "${want[@]}" <<'PY'
 import sys
-path = sys.argv[1]
+path, add = sys.argv[1], sys.argv[2:]
 with open(path) as fp:
     toks = fp.read().split()
-if "splash" not in toks:
-    toks.append("splash")
+for t in add:
+    if t not in toks:
+        toks.append(t)
 with open(path, "w") as fp:
     fp.write(" ".join(toks) + "\n")
 PY
-            echo "$f 에 splash 를 넣었습니다 (백업: $f.plymouth.bak)"
+            echo "$f 에 ${want[*]} 를 넣었습니다 (백업: $f.plymouth.bak)"
+        else
+            echo "$f 는 이미 준비돼 있습니다 (splash, 시리얼 콘솔 처리)."
         fi
     else
-        echo "cmdline.txt 를 찾지 못했습니다. splash 를 직접 넣어 주세요."
+        echo "cmdline.txt 를 찾지 못했습니다. splash 와"
+        echo "plymouth.ignore-serial-consoles 를 직접 넣어 주세요."
     fi
 fi
 
