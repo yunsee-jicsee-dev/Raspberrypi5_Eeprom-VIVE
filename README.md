@@ -13,6 +13,8 @@
 | `systemd/rpi5-bootintro.service` | 기본. 데스크톱이 뜨기 전에 프레임버퍼로 재생 |
 | `desktop/rpi5-bootintro.desktop` | 대안. 로그인 세션 안에서 전체화면 창으로 재생 |
 | `scripts/try-intro.sh` | 설치하지 않고 화면에 나오는지만 확인 |
+| `scripts/make-plymouth-theme.py` | 인트로를 PNG 프레임으로 구워 plymouth 테마 생성 |
+| `scripts/install-plymouth-theme.sh` | 그 테마를 부팅 스플래시로 설치/복구 |
 | `scripts/install-bootintro.sh` | 설치/제거 |
 | `scripts/diagnose.sh` | 화면에 안 나올 때 원인 좁히기 |
 
@@ -36,6 +38,40 @@ sudo scripts/install-bootintro.sh
 `~/.config/autostart/` 에 항목을 넣어 로그인 후 전체화면 창으로 재생한다.
 **부팅 경로에 아무것도 넣지 않으므로 이것 때문에 부팅이 막힐 수 없다.**
 대신 바탕화면이 그려진 뒤에 프로세스가 시작되므로 바탕화면이 잠깐 보인다.
+
+### plymouth 테마 (부팅 스플래시 자리를 제대로 쓰는 방법)
+
+```bash
+sudo apt install -y plymouth plymouth-themes
+sudo scripts/install-plymouth-theme.sh
+sudo reboot
+```
+
+부팅 스플래시 자리는 원래 plymouth 것이다. 거기에 systemd 서비스를 끼워 넣으려
+하면 plymouth 와 화면(DRM) 을 두고 다투게 되고, 그래서 아무것도 안 보이거나
+부팅이 막힌다. 싸우지 말고 **plymouth 가 우리 인트로를 재생하게** 하면 된다.
+
+연출을 plymouth 스크립트로 다시 짜지는 않는다. `intro.py` 로 PNG 프레임을 구워
+두고 테마 스크립트가 한 장씩 넘기므로 **그림은 픽셀 단위로 똑같다.**
+
+```bash
+python3 scripts/make-plymouth-theme.py --fps 25 --zoom 3   # 미리 구워 보기
+```
+
+기본값은 20fps x 2배(800x480) = 74장, 디스크 0.6MB. plymouth 가 전부 메모리에
+올리므로 약 110MB 를 쓴다. `--fps` 와 `--zoom` 으로 줄일 수 있다.
+
+설치할 때 이전 테마 이름을 적어 두고, `cmdline.txt` 에 `splash` 가 없으면
+넣는다(백업을 남긴다). plymouth 는 `splash` 가 있어야 화면에 뜬다.
+
+되돌리기:
+
+```bash
+sudo scripts/install-plymouth-theme.sh --uninstall
+```
+
+**이 방식은 부팅을 붙잡지 않는다.** systemd 서비스가 아니라 plymouth 테마일
+뿐이라, 테마에 문제가 있어도 스플래시가 안 뜰 뿐 부팅은 그대로 진행된다.
 
 ### 부팅 방식 (바탕화면이 안 비치는 대신 위험)
 
