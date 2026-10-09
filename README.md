@@ -58,11 +58,26 @@ sudo reboot
 python3 scripts/make-plymouth-theme.py --fps 25 --zoom 3   # 미리 구워 보기
 ```
 
-기본값은 20fps x 2배(800x480) = 74장, 디스크 0.6MB. plymouth 가 전부 메모리에
-올리므로 약 110MB 를 쓴다. `--fps` 와 `--zoom` 으로 줄일 수 있다.
+기본값은 25fps x 2배(800x480) = 92장, 디스크 0.7MB. plymouth 가 전부 메모리에
+올리므로 약 135MB 를 쓴다. `--fps` 와 `--zoom` 으로 줄일 수 있다.
+plymouth 는 초당 50회 갱신하므로 `--fps` 는 50 의 약수(50/25/10/5)여야 한다.
 
 설치할 때 이전 테마 이름을 적어 두고, `cmdline.txt` 에 `splash` 가 없으면
 넣는다(백업을 남긴다). plymouth 는 `splash` 가 있어야 화면에 뜬다.
+
+**initramfs**: 라즈베리파이 OS 는 `config.txt` 에 `auto_initramfs=1` 이 있어서
+plymouth 가 initramfs 안에서 돈다. 테마만 바꾸고 initramfs 를 다시 굽지 않으면
+옛 테마가 그대로 쓰인다 (`plymouth-set-default-theme` 은 새 테마를 가리키는데
+화면은 그대로인 증상). 설치 스크립트가 감지해서 `update-initramfs -u` 를
+돌린다.
+
+안 나올 때는 콘솔에서 미리보기 + 오류 확인:
+
+```bash
+sudo plymouthd --no-daemon --debug --debug-file=/tmp/ply.log &
+sleep 1; sudo plymouth --show-splash; sleep 8; sudo plymouth quit
+grep -iE "error|script|rpi5" /tmp/ply.log | head -40
+```
 
 되돌리기:
 
