@@ -1,0 +1,64 @@
+#!/bin/sh
+# initramfs-tools hook - 토큰 해제에 필요한 것을 initramfs 에 넣는다.
+PREREQ="cryptroot"
+
+prereqs() { echo "$PREREQ"; }
+
+case "${1:-}" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+set -e
+
+# 1) 키스크립트와 공용 함수
+mkdir -p "$DESTDIR/usr/lib/viveboot"
+copy_exec /usr/lib/viveboot/viveboot-keyscript /usr/lib/viveboot
+cp -a /usr/lib/viveboot/viveboot-common.sh "$DESTDIR/usr/lib/viveboot/"
+
+# 2) 설정
+mkdir -p "$DESTDIR/etc/viveboot"
+if [ -r /etc/viveboot/viveboot.conf ]; then
+	cp -a /etc/viveboot/viveboot.conf "$DESTDIR/etc/viveboot/"
+fi
+# 부팅 게이트 (vive-boot-gate enable 이 만든다). 없으면 게이트가 꺼진 것이다.
+if [ -r /etc/viveboot/gate ]; then
+	cp -a /etc/viveboot/gate "$DESTDIR/etc/viveboot/"
+fi
+
+# 부팅 중에도 udev 가 토큰 디스켓을 훑지 않게 한다 (상한 트랙에서 몇 분씩 멈춤).
+if [ -r /etc/udev/rules.d/59-viveboot-floppy.rules ]; then
+	mkdir -p "$DESTDIR/etc/udev/rules.d"
+	cp -a /etc/udev/rules.d/59-viveboot-floppy.rules "$DESTDIR/etc/udev/rules.d/"
+fi
+
+# 3) openssl (PBKDF2/HMAC). libcrypto 는 copy_exec 가 따라온다.
+copy_exec /usr/bin/openssl /usr/bin
+if [ -r /etc/ssl/openssl.cnf ]; then
+	mkdir -p "$DESTDIR/etc/ssl"
+	cp -a /etc/ssl/openssl.cnf "$DESTDIR/etc/ssl/"
+fi
+
+# 4) askpass - 우회 경로(viveboot=off)와 PIN 입력이 쓴다.
+# 보통 cryptroot 훅이 이미 넣어 주지만(PREREQ 로 먼저 돌게 해 두었다),
+# cryptsetup 설정에서 ASKPASS=n 으로 끈 경우에는 빠진다. 그러면 토큰을
+# 잃었을 때의 1순위 복구 경로가 조용히 사라지므로 직접 보장한다.
+for ap in /lib/cryptsetup/askpass /usr/lib/cryptsetup/askpass; do
+	if [ -x "$ap" ]; then
+		copy_exec "$ap" "$(dirname "$ap")"
+		break
+	fi
+done
+
+# 5) USB 플로피 드라이브는 usb-storage(UFI) 로 /dev/sdX 로 올라온다.
+for mod in usb_storage uas sd_mod xhci_pci xhci_pci_renesas; do
+	manual_add_modules "$mod" 2>/dev/null || true
+done
+# 실물 플로피 컨트롤러를 쓰는 경우(대개 Pi 가 아님)를 위해
+manual_add_modules floppy 2>/dev/null || true
+
+exit 0

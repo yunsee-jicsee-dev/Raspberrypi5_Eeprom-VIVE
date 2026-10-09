@@ -1,0 +1,118 @@
+#!/bin/sh
+# viveboot-seqcheck - 부팅 직후 플로피 토큰의 부팅 카운터를 검사한다.
+#
+# initramfs 의 키스크립트가 /run/viveboot/boot-seq 에 남긴 값과
+# 암호화된 루트 안의 상태 파일(SEQ_STATE)을 비교한다. 값이 어긋나면
+# 토큰이 복제되었거나(두 매체가 번갈아 쓰임) 되돌려졌다는 뜻이다.
+#
+# 상태 파일은 암호화된 루트 안에 있으므로 토큰만 훔친 공격자는 고칠 수 없다.
+set -u
+
+VB_TAG="viveboot-seqcheck"
+# 경로는 테스트에서만 덮어쓴다.
+VB_LIB=${VIVEBOOT_LIB:-/usr/lib/viveboot/viveboot-common.sh}
+VB_CONF=${VIVEBOOT_CONF:-/etc/viveboot/viveboot.conf}
+VB_RUN=${VIVEBOOT_RUN:-/run/viveboot}
+
+# shellcheck source=../lib/viveboot-common.sh
+. "$VB_LIB"
+
+SEQ_POLICY=warn
+SEQ_STATE=/var/lib/viveboot/state
+# shellcheck source=../etc/viveboot.conf
+[ -r "$VB_CONF" ] && . "$VB_CONF"
+
+[ "$SEQ_POLICY" = off ] && exit 0
+
+wipe_runtime() {
+	rm -f "$VB_RUN/mackey" "$VB_RUN/boot-seq" 2>/dev/null || true
+}
+
+[ -s "$VB_RUN/boot-seq" ] || {
+	vb_log "이번 부팅에는 토큰 카운터 기록이 없습니다 (검사 생략)"
+	wipe_runtime
+	exit 0
+}
+[ -s "$VB_RUN/mackey" ] || {
+	vb_warn "MAC 키가 없어 카운터를 검증할 수 없습니다"
+	wipe_runtime
+	exit 0
+}
+
+read -r VB_MACKEY_HEX < "$VB_RUN/mackey"
+token_uuid=""
+seq_seen=""
+seq_written=""
+mac=""
+while IFS='=' read -r k v; do
+	case "$k" in
+	token_uuid) token_uuid=$v ;;
+	seq_seen) seq_seen=$v ;;
+	seq_written) seq_written=$v ;;
+	mac) mac=$v ;;
+	esac
+done < "$VB_RUN/boot-seq"
+
+want=$(vb_hmac_hex "$VB_MACKEY_HEX" "$VB_STATE_INFO|$token_uuid|$seq_written")
+[ -n "$want" ] && [ "$want" = "$mac" ] || {
+	vb_warn "부팅 카운터 기록의 MAC 이 맞지 않습니다 - 검사를 건너뜁니다"
+	wipe_runtime
+	exit 0
+}
+
+# --- 저장된 상태와 비교 ----------------------------------------------------
+anomaly=""
+if [ -s "$SEQ_STATE" ]; then
+	st_uuid=""
+	st_seq=""
+	st_mac=""
+	while IFS='=' read -r k v; do
+		case "$k" in
+		token_uuid) st_uuid=$v ;;
+		seq) st_seq=$v ;;
+		mac) st_mac=$v ;;
+		esac
+	done < "$SEQ_STATE"
+	st_want=$(vb_hmac_hex "$VB_MACKEY_HEX" "$VB_STATE_INFO|$st_uuid|${st_seq:-0}")
+	if [ "$st_want" != "$st_mac" ]; then
+		anomaly="상태 파일의 MAC 이 맞지 않습니다 (위조 또는 손상)"
+	elif [ "$st_uuid" != "$token_uuid" ]; then
+		anomaly="다른 토큰으로 부팅되었습니다 (저장: $st_uuid, 현재: $token_uuid)"
+	elif [ "$seq_seen" -lt "$st_seq" ]; then
+		anomaly="토큰 카운터가 되돌아갔습니다 (토큰 $seq_seen < 기록 $st_seq). 복제본이 쓰였을 수 있습니다"
+	elif [ "$seq_seen" -gt "$st_seq" ]; then
+		anomaly="토큰 카운터가 기록보다 앞서 있습니다 (토큰 $seq_seen > 기록 $st_seq). 이 토큰이 다른 기기에서 쓰였을 수 있습니다"
+	fi
+else
+	vb_log "상태 파일이 없어 새로 만듭니다 ($SEQ_STATE)"
+fi
+
+# --- 상태 갱신 -------------------------------------------------------------
+mkdir -p "$(dirname "$SEQ_STATE")" 2>/dev/null || true
+( umask 077 && {
+	printf '# viveboot 부팅 카운터 상태 - 비밀값 아님\n'
+	printf 'version=1\n'
+	printf 'token_uuid=%s\n' "$token_uuid"
+	printf 'seq=%s\n' "$seq_written"
+	printf 'mac=%s\n' \
+		"$(vb_hmac_hex "$VB_MACKEY_HEX" "$VB_STATE_INFO|$token_uuid|$seq_written")"
+} > "$SEQ_STATE.new" ) && mv "$SEQ_STATE.new" "$SEQ_STATE" \
+	|| vb_warn "$SEQ_STATE 갱신 실패"
+
+wipe_runtime
+
+if [ -n "$anomaly" ]; then
+	vb_warn "$anomaly"
+	logger -t "$VB_TAG" -p auth.crit "$anomaly" 2>/dev/null || true
+	command -v wall >/dev/null 2>&1 \
+		&& printf 'viveboot: %s\n' "$anomaly" | wall 2>/dev/null
+	if [ "$SEQ_POLICY" = poweroff ]; then
+		vb_warn "SEQ_POLICY=poweroff - 전원을 끕니다"
+		sync
+		systemctl poweroff || poweroff -f
+	fi
+	exit 1
+fi
+
+vb_log "토큰 카운터 정상 (seq $seq_seen -> $seq_written)"
+exit 0

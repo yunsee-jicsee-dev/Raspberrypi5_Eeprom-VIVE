@@ -1,0 +1,153 @@
+#!/bin/sh
+# viveboot-keyscript - /etc/crypttab 의 keyscript= 로 호출된다.
+#
+# 플로피 토큰의 원시 섹터에서 키 조각을 읽어 LUKS 암호문을 계산하고
+# stdout 으로 '개행 없이' 출력한다. 그 밖의 모든 출력은 stderr 로 간다.
+#
+# 실패하면 0 이 아닌 값으로 끝나고 아무것도 출력하지 않는다. 그 경우
+# cryptsetup 이 해제에 실패하고 initramfs 쉘로 떨어진다(= 부팅 차단).
+set -u
+
+VB_TAG="viveboot-keyscript"
+# 경로는 테스트에서만 덮어쓴다. 부팅 시에는 initramfs 안의 기본 경로를 쓴다.
+VB_LIB=${VIVEBOOT_LIB:-/usr/lib/viveboot/viveboot-common.sh}
+VB_CONF=${VIVEBOOT_CONF:-/etc/viveboot/viveboot.conf}
+VB_RUN=${VIVEBOOT_RUN:-/run/viveboot}
+VB_CMDLINE=${VIVEBOOT_CMDLINE:-/proc/cmdline}
+
+[ -r "$VB_LIB" ] || {
+	printf '%s: 오류: %s 를 찾을 수 없습니다\n' "$VB_TAG" "$VB_LIB" >&2
+	exit 1
+}
+# shellcheck source=../../lib/viveboot-common.sh
+. "$VB_LIB"
+
+# 기본값 - viveboot.conf 에서 덮어쓸 수 있다.
+TOKEN_DEVICE=""
+TOKEN_WAIT=60
+TOKEN_MAX_SECTORS=8192
+SEQ_UPDATE=yes
+PIN_PROMPT="VIVE 토큰 PIN: "
+CACHE_IKM=yes
+BYPASS_CMDLINE=yes
+BYPASS_PROMPT="패스프레이즈 (viveboot 우회): "
+
+# shellcheck source=../../etc/viveboot.conf
+[ -r "$VB_CONF" ] && . "$VB_CONF"
+
+# --- 0) 한 번만 우회: 커널 커맨드라인의 viveboot=off -----------------------
+# 토큰을 잃었거나 USB FDD 가 고장 났을 때, initramfs 를 다시 만들지 않고
+# 이번 부팅만 패스프레이즈로 들어가는 길이다.
+#
+# 중요: 여기서 아무것도 출력하지 않고 끝내면 안 된다. cryptsetup 은
+# `keyscript | cryptsetup --key-file=- open` 으로 호출되므로, 빈 출력은
+# "Nothing to read on input." 으로 실패할 뿐이고 패스프레이즈를 묻지 않는다.
+# 그래서 cryptsetup 의 기본 대화형 경로와 똑같이 askpass 를 직접 띄운다.
+if [ "$BYPASS_CMDLINE" = yes ] && vb_cmdline_word viveboot=off "$VB_CMDLINE"; then
+	if vb_askpass=$(vb_askpass_path); then
+		vb_log "커널 커맨드라인에 viveboot=off - 토큰을 건너뛰고 패스프레이즈를 묻습니다"
+		exec "$vb_askpass" "${CRYPTTAB_NAME:-cryptroot} $BYPASS_PROMPT"
+	fi
+	vb_die "viveboot=off 로 우회하려 했지만 askpass 를 찾을 수 없습니다"
+	vb_warn "initramfs 쉘에서 'cryptsetup open' 으로 직접 여세요 (docs/recovery.md §4)"
+	exit 1
+fi
+
+mkdir -p "$VB_RUN" 2>/dev/null || true
+chmod 700 "$VB_RUN" 2>/dev/null || true
+VB_TMPDIR=$VB_RUN
+export VB_TMPDIR
+
+command -v openssl >/dev/null 2>&1 || {
+	vb_die "initramfs 안에 openssl 이 없습니다. hook 설치와 update-initramfs 를 확인하세요"
+	exit 1
+}
+
+cleanup() {
+	rm -f "$VB_RUN/hdrbody" "$VB_RUN/shardbody" "$VB_RUN/seqbody" \
+		"$VB_RUN/seqsec" "$VB_RUN/seqsec.pre" "$VB_RUN/seqsec.mac" 2>/dev/null
+}
+trap cleanup EXIT HUP INT TERM
+
+# --- 1) 토큰 장치 찾기 -------------------------------------------------------
+if [ -n "$TOKEN_DEVICE" ]; then
+	# 설정에 장치가 못박혀 있으면 나타날 때까지만 기다린다.
+	waited=0
+	while [ ! -e "$TOKEN_DEVICE" ]; do
+		[ "$waited" -ge "$TOKEN_WAIT" ] && {
+			vb_die "$TOKEN_DEVICE 가 ${TOKEN_WAIT}초 안에 나타나지 않았습니다"
+			exit 1
+		}
+		[ "$waited" -eq 0 ] && vb_log "토큰 플로피를 넣어 주세요 ($TOKEN_DEVICE 대기 중)"
+		sleep 2
+		waited=$(( waited + 2 ))
+	done
+	VB_DEVICE=$TOKEN_DEVICE
+else
+	vb_find_token "$TOKEN_WAIT" "$TOKEN_MAX_SECTORS" || exit 1
+fi
+vb_log "토큰 장치: $VB_DEVICE"
+
+# --- 2) 헤더와 키 조각 ------------------------------------------------------
+vb_parse_header "$VB_DEVICE" || exit 1
+
+IKM_CACHE="$VB_RUN/ikm.cache"
+if [ "$CACHE_IKM" = yes ] && [ -s "$IKM_CACHE" ]; then
+	# 암호화 볼륨이 여러 개일 때 플로피를 다시 읽지 않는다.
+	read -r cached_uuid cached_ikm < "$IKM_CACHE" || true
+	if [ "${cached_uuid:-}" = "$VB_UUID_HEX" ]; then
+		VB_IKM_HEX=$cached_ikm
+	fi
+fi
+if [ -z "${VB_IKM_HEX:-}" ]; then
+	vb_read_ikm "$VB_DEVICE" || exit 1
+	if [ "$CACHE_IKM" = yes ]; then
+		( umask 077 && printf '%s %s\n' "$VB_UUID_HEX" "$VB_IKM_HEX" \
+			> "$IKM_CACHE" ) 2>/dev/null || true
+	fi
+fi
+
+# --- 3) PIN ----------------------------------------------------------------
+PIN=""
+if [ "$VB_PIN_REQUIRED" -eq 1 ]; then
+	PIN=$(vb_ask_pin "$PIN_PROMPT")
+fi
+
+# --- 4) 키 파생 -------------------------------------------------------------
+vb_derive "$PIN" || exit 1
+PIN=""
+
+# --- 5) 부팅 카운터 (복제/롤백 탐지) ---------------------------------------
+# 카운터 처리는 절대 부팅을 막지 않는다. 실패하면 경고만 남긴다.
+if [ "$SEQ_UPDATE" = yes ] && [ "$VB_SEQ_ENABLED" -eq 1 ] \
+	&& [ ! -s "$VB_RUN/boot-seq" ]; then
+	if seq_now=$(vb_seq_read "$VB_DEVICE" "$VB_SEQ_LBA"); then
+		seq_next=$(( seq_now + 1 ))
+		if vb_seq_write "$VB_DEVICE" "$VB_SEQ_LBA" "$seq_next"; then
+			vb_seq_write "$VB_DEVICE" "$VB_SEQ_LBA_MIRROR" "$seq_next" \
+				|| vb_warn "카운터 사본 기록 실패 (LBA $VB_SEQ_LBA_MIRROR)"
+			# MAC 키는 ikm 의 일방향 함수라 LUKS 키를 되돌릴 수 없다.
+			# 부팅 후 viveboot-seqcheck 가 쓰고 바로 지운다.
+			( umask 077 && printf '%s\n' "$VB_MACKEY_HEX" \
+				> "$VB_RUN/mackey" ) 2>/dev/null \
+				|| vb_warn "/run/viveboot/mackey 기록 실패"
+			( umask 077 && {
+				printf 'token_uuid=%s\n' "$VB_UUID_HEX"
+				printf 'seq_seen=%s\n' "$seq_now"
+				printf 'seq_written=%s\n' "$seq_next"
+				printf 'mac=%s\n' \
+					"$(vb_hmac_hex "$VB_MACKEY_HEX" \
+						"$VB_STATE_INFO|$VB_UUID_HEX|$seq_next")"
+			} > "$VB_RUN/boot-seq" ) 2>/dev/null \
+				|| vb_warn "/run/viveboot/boot-seq 기록 실패"
+		else
+			vb_warn "플로피에 카운터를 쓸 수 없습니다 (쓰기 금지 탭 또는 불량 섹터?)"
+		fi
+	else
+		vb_warn "부팅 카운터를 읽을 수 없습니다 - 복제 탐지를 건너뜁니다"
+	fi
+fi
+
+# --- 6) 키 출력 (개행 없음) -------------------------------------------------
+printf '%s' "$VB_PASSPHRASE"
+exit 0
