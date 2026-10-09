@@ -3,6 +3,7 @@
 #
 #   sudo scripts/install-bootintro.sh              기본: 데스크톱이 뜨기 전에 재생
 #   sudo scripts/install-bootintro.sh --session    대안: 로그인 세션 안에서 재생
+#   sudo scripts/install-bootintro.sh --no-plymouth  설치 + cmdline.txt 에서 splash 제거
 #   sudo scripts/install-bootintro.sh --uninstall  제거
 #
 # 기본(--boot) 은 systemd 서비스로 multi-user.target 과 display-manager.service
@@ -31,12 +32,57 @@ USER_HOME=""
 AUTOSTART_DIR="$USER_HOME/.config/autostart"
 
 MODE=boot
-case "${1:-}" in
-    ""|--boot|--console) MODE=boot ;;
-    --session|--desktop) MODE=session ;;
-    --uninstall)         MODE=uninstall ;;
-    *)                   die "모르는 옵션: $1" ;;
-esac
+DROP_SPLASH=0
+for arg in "$@"; do
+    case "$arg" in
+        --boot|--console)  MODE=boot ;;
+        --session|--desktop) MODE=session ;;
+        --uninstall)       MODE=uninstall ;;
+        --no-plymouth)     DROP_SPLASH=1 ;;
+        *)                 die "모르는 옵션: $arg" ;;
+    esac
+done
+
+# 커널 커맨드라인에서 splash 를 뺀다. plymouth 스플래시가 떠 있으면 화면(DRM) 을
+# 쥐고 있어서 프레임버퍼에 그린 게 안 보인다. 부팅에 치명적인 파일이라
+# 백업을 남기고, --no-plymouth 를 직접 준 경우에만 건드린다.
+find_cmdline() {
+    local p
+    for p in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+        [[ -f $p ]] && { echo "$p"; return 0; }
+    done
+    return 1
+}
+
+drop_splash() {
+    local f
+    f="$(find_cmdline)" || { echo "cmdline.txt 를 찾지 못했습니다. 건너뜁니다."; return 0; }
+    grep -qw splash "$f" || { echo "$f 에 splash 가 없습니다. 그대로 둡니다."; return 0; }
+    [[ -f "$f.bootintro.bak" ]] || cp -a "$f" "$f.bootintro.bak"
+    python3 - "$f" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as fp:
+    text = fp.read()
+kept = [t for t in text.split() if t != "splash"]
+with open(path, "w") as fp:
+    fp.write(" ".join(kept) + "\n")
+PY
+    echo "  $f 에서 splash 를 뺐습니다 (백업: $f.bootintro.bak)"
+    echo "  되돌리려면:  sudo cp $f.bootintro.bak $f"
+}
+
+warn_splash() {
+    local f
+    f="$(find_cmdline)" || return 0
+    grep -qw splash "$f" && cat <<WARN
+
+경고: $f 에 splash 가 있습니다.
+plymouth 스플래시가 화면을 쥐고 있으면 인트로가 안 보일 수 있습니다.
+빼려면:  sudo $0 --no-plymouth
+WARN
+    return 0
+}
 
 remove_unit() {
     systemctl disable --now "$UNIT" 2>/dev/null || true
@@ -108,7 +154,8 @@ else
     journalctl -u $UNIT -b
 
 부팅 로그 글자와 모서리 라즈베리를 가리려면 /boot/firmware/cmdline.txt 끝에
-한 줄 그대로 이어서 (그리고 splash 가 있으면 지우세요):
+한 줄 그대로 이어서:
     quiet logo.nologo vt.global_cursor_default=0 consoleblank=0
 TIP
+    if [[ $DROP_SPLASH == 1 ]]; then drop_splash; else warn_splash; fi
 fi

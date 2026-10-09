@@ -57,13 +57,29 @@ journalctl -u rpi5-bootintro.service -b
 ```
 
 화면 정보를 읽었다면 `1920x1080 32bpp, 4배 확대` 같은 줄이 찍힌다. 그 줄이
-나오는데도 화면에 아무것도 없다면 `plymouth` 스플래시가 화면을 쥐고 있을 수 있다.
-`/boot/firmware/cmdline.txt` 에서 `splash` 를 지우고 아래를 이어서 적는다
-(한 줄짜리 파일이다):
+나오는데도 화면에 아무것도 없다면 `plymouth` 스플래시가 화면(DRM) 을 쥐고 있을
+수 있다. `cmdline.txt` 에서 `splash` 를 빼면 된다:
+
+```bash
+sudo scripts/install-bootintro.sh --no-plymouth
+```
+
+`cmdline.txt` 는 부팅에 치명적인 파일이라 `--no-plymouth` 를 직접 줬을 때만
+건드리고, `cmdline.txt.bootintro.bak` 에 백업을 남긴다. 되돌리려면 그 백업을
+덮어쓰면 된다.
+
+부팅 로그 글자와 모서리 라즈베리까지 가리려면 `/boot/firmware/cmdline.txt`
+(한 줄짜리 파일) 끝에 이어서 적는다:
 
 ```
 quiet logo.nologo vt.global_cursor_default=0 consoleblank=0
 ```
+
+### plymouth 에는 손대지 않는다
+
+서비스에서 `plymouth quit` 을 부르면 안 된다. `plymouth-quit-wait.service` 는
+`plymouth --wait` 로 plymouthd 가 끝나길 기다리는데, 그 대상을 밖에서 죽이면
+기다리던 쪽이 실패한다. 스플래시가 방해되면 죽이지 말고 `splash` 를 빼야 한다.
 
 ## 손으로 돌려 보기
 

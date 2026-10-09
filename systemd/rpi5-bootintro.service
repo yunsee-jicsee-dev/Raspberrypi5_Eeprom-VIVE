@@ -7,18 +7,22 @@
 # 데스크톱 세션 안(XDG autostart) 에서 띄우면 바탕화면이 먼저 그려진 뒤에야
 # 프로세스가 시작되므로 번쩍임을 없앨 수 없다.
 #
+# plymouth 에는 손대지 않는다. 여기서 `plymouth quit` 을 부르면
+# plymouth-quit-wait.service(= plymouth --wait) 가 기다리던 대상을 밖에서
+# 죽이는 꼴이라 그쪽이 실패한다. plymouth 스플래시가 화면을 쥐고 있어서
+# 인트로가 안 보인다면 cmdline.txt 에서 splash 를 빼는 게 맞다
+# (scripts/install-bootintro.sh --no-plymouth).
+#
 # 설치:  sudo scripts/install-bootintro.sh
 [Unit]
 Description=Raspberry Pi 5 boot intro
 Documentation=https://github.com/yunsee-jicsee-dev/Raspberrypi5_Eeprom-VIVE
 After=multi-user.target
-Before=display-manager.service graphical.target getty@tty1.service
+Before=display-manager.service getty@tty1.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/rpi5-bootintro
-# plymouth 스플래시가 떠 있으면 화면(DRM) 을 쥐고 있어서 우리 그림이 안 보인다.
-ExecStartPre=-/bin/sh -c 'plymouth quit 2>/dev/null || true'
 ExecStart=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display fb --wait-fb 10 --fps 30 --optional
 TimeoutStartSec=60
 StandardOutput=journal
