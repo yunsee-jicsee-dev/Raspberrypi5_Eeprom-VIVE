@@ -345,8 +345,8 @@ def parse_size(txt):
 
 def build_parser():
     p = argparse.ArgumentParser(description="부팅 때 라즈베리파이 5 인트로 재생")
-    p.add_argument("--display", choices=("auto", "fb", "sdl", "frames"), default="auto",
-                   help="auto: 프레임버퍼가 있으면 거기, 없으면 창 (기본)")
+    p.add_argument("--display", choices=("auto", "kms", "fb", "sdl", "frames"), default="auto",
+                   help="auto: 데스크톱이면 전체화면 창, 아니면 kms → fb 순서 (기본)")
     p.add_argument("--fbdev", default=FB_DEFAULT, help=f"프레임버퍼 장치 (기본 {FB_DEFAULT})")
     p.add_argument("--fb-geometry", type=parse_geometry, metavar="WxH@BPP",
                    help="화면 정보를 못 읽을 때 직접 지정")
@@ -377,6 +377,38 @@ def build_parser():
     return p
 
 
+def set_video_driver(name):
+    """SDL 비디오 드라이버를 바꾼다. 이미 열려 있으면 닫고 다시."""
+    if pygame.display.get_init():
+        pygame.display.quit()
+    if name:
+        os.environ["SDL_VIDEODRIVER"] = name
+    else:
+        os.environ.pop("SDL_VIDEODRIVER", None)
+
+
+def open_kms(canvas_size, max_scale, wait=0.0):
+    """KMS/DRM 로 화면을 직접 잡는다.
+
+    라즈베리파이 5 는 vc4-kms-v3d 로 도는 KMS 환경이라 /dev/fb0 은 DRM 의
+    fbdev 흉내 장치다. 거기 쓴 게 화면에 안 나타나는 경우가 있어서, 컴포지터가
+    없는 동안엔 DRM 을 직접 잡는 이쪽이 더 확실하다. (root 이거나 video 그룹,
+    그리고 다른 DRM master 가 없어야 한다.)
+    """
+    set_video_driver("kmsdrm")
+    return open_window(canvas_size, 1, True, max_scale, wait)
+
+
+def open_fb(a, canvas_size, quiet):
+    """리눅스 프레임버퍼(/dev/fb0) 에 직접 쓴다."""
+    set_video_driver("dummy")
+    fb = Framebuffer(a.fbdev, a.fb_geometry, a.fb_stride)
+    out = FbOutput(fb, canvas_size, a.max_scale)
+    if not quiet:
+        print(f"[인트로] fb {fb.width}x{fb.height} {fb.bpp}bpp, {out.scale}배 확대")
+    return out
+
+
 def main(argv=None):
     a = build_parser().parse_args(argv)
     cw, ch = a.size
@@ -388,39 +420,59 @@ def main(argv=None):
     if a.save_frames:
         mode = "frames"
     on_desktop = desktop_session()
-    if mode == "auto":
-        if on_desktop:
-            mode = "sdl"          # 컴포지터가 화면을 쥐고 있으니 창으로
-        else:
-            if a.wait_fb:
-                wait_for_fb(a.fbdev, a.wait_fb)
-            mode = "fb" if os.path.exists(a.fbdev) else "sdl"
     fullscreen = on_desktop if a.fullscreen is None else a.fullscreen
-    if mode in ("fb", "frames") or (mode == "sdl" and not on_desktop):
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
-    if mode == "fb" and a.wait_fb and not wait_for_fb(a.fbdev, a.wait_fb):
+    # 어떤 출력을 어떤 순서로 시도할지.
+    #   데스크톱 세션 안  → 전체화면 창 (컴포지터가 화면을 쥐고 있다)
+    #   그 밖(부팅 중 등) → KMS 로 화면을 직접 잡아 보고, 안 되면 프레임버퍼
+    if mode == "auto":
+        chain = ["sdl"] if on_desktop else ["kms", "fb"]
+    else:
+        chain = [mode]
+
+    if "fb" in chain and a.wait_fb and not wait_for_fb(a.fbdev, a.wait_fb):
         print(f"{a.fbdev} 가 {a.wait_fb}초 안에 안 나타났어요", file=sys.stderr)
-        return 0 if a.optional else 1
+        chain = [m for m in chain if m != "fb"]
 
+    out = None
     cursor_off = False
-    try:
-        if mode == "fb":
-            fb = Framebuffer(a.fbdev, a.fb_geometry, a.fb_stride)
-            if not a.keep_cursor:
-                console_cursor(False)
-                cursor_off = True
-            out = FbOutput(fb, (cw, ch), a.max_scale)
-            if not a.quiet:
-                print(f"[인트로] {fb.width}x{fb.height} {fb.bpp}bpp, {out.scale}배 확대")
-        elif mode == "frames":
-            out = FrameDumpOutput(a.save_frames or "frames", a.every)
-        else:
-            out = open_window((cw, ch), a.window_scale, fullscreen,
-                              a.max_scale, a.wait_display)
-    except (FramebufferError, pygame.error) as e:
-        print(e, file=sys.stderr)
+    problems = []
+    for want in chain:
+        try:
+            if want == "fb":
+                if not a.keep_cursor and not cursor_off:
+                    console_cursor(False)
+                    cursor_off = True
+                out = open_fb(a, (cw, ch), a.quiet)
+            elif want == "kms":
+                if not a.keep_cursor and not cursor_off:
+                    console_cursor(False)
+                    cursor_off = True
+                out = open_kms((cw, ch), a.max_scale, a.wait_display)
+                if not a.quiet:
+                    print(f"[인트로] kms {out.win.get_size()}, {out.scale}배 확대")
+            elif want == "frames":
+                out = FrameDumpOutput(a.save_frames or "frames", a.every)
+            else:
+                if not on_desktop:
+                    set_video_driver("dummy")
+                out = open_window((cw, ch), a.window_scale, fullscreen,
+                                  a.max_scale, a.wait_display)
+                if not a.quiet:
+                    print(f"[인트로] sdl {out.win.get_size()}, {out.scale}배 확대")
+            break
+        except (FramebufferError, pygame.error, OSError) as e:
+            problems.append(f"{want}: {e}")
+
+    if out is None:
+        for p in problems:
+            print(p, file=sys.stderr)
+        if cursor_off:
+            console_cursor(True)
         return 0 if a.optional else 1
+    if problems and not a.quiet:
+        for p in problems:
+            print(f"[인트로] 건너뜀 — {p}")
 
     if a.delay > 0:
         time.sleep(a.delay)

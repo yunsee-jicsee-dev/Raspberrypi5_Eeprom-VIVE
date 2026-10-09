@@ -13,6 +13,7 @@
 | `systemd/rpi5-bootintro.service` | 기본. 데스크톱이 뜨기 전에 프레임버퍼로 재생 |
 | `desktop/rpi5-bootintro.desktop` | 대안. 로그인 세션 안에서 전체화면 창으로 재생 |
 | `scripts/install-bootintro.sh` | 설치/제거 |
+| `scripts/diagnose.sh` | 화면에 안 나올 때 원인 좁히기 |
 
 ## 부팅할 때 인트로 띄우기
 
@@ -51,6 +52,16 @@ sudo scripts/install-bootintro.sh --uninstall
 ```
 
 ### 안 나올 때
+
+```bash
+sudo scripts/diagnose.sh
+```
+
+기기/OS, 서비스 등록과 로그, 부팅 순서가 실제로 먹었는지, plymouth 상태,
+`/dev/fb*` 와 `/dev/dri/*`, SDL 이 쓸 수 있는 비디오 드라이버를 한 번에 찍고,
+마지막에 KMS 와 프레임버퍼로 각각 실제 재생을 시험한다.
+
+서비스 로그만 보려면:
 
 ```bash
 journalctl -u rpi5-bootintro.service -b
@@ -93,7 +104,11 @@ python3 intro.py --size 160x128                # 인트로만 LCD 크기로 미�
 ```
 
 `--display auto`(기본) 는 `WAYLAND_DISPLAY`/`DISPLAY` 가 있으면 전체화면 창,
-없으면 `/dev/fb0` 을 쓴다.
+없으면 **KMS/DRM → 프레임버퍼** 순으로 시도한다. 라즈베리파이 5 는
+`vc4-kms-v3d` 로 도는 KMS 환경이라 `/dev/fb0` 은 DRM 의 fbdev 흉내 장치다.
+거기 쓴 게 화면에 안 나타나는 경우가 있어서, 컴포지터가 없는 동안엔 DRM 을
+직접 잡는 쪽(`--display kms`) 이 더 확실하다. 실패한 경로는 이유와 함께
+로그에 남는다.
 
 화면 정보를 못 읽는 프레임버퍼라면 직접 알려 준다:
 

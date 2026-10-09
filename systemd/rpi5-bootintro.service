@@ -23,7 +23,7 @@ Before=display-manager.service getty@tty1.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/rpi5-bootintro
-ExecStart=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display fb --wait-fb 10 --fps 30 --optional
+ExecStart=/usr/bin/python3 /opt/rpi5-bootintro/bootintro.py --display auto --wait-fb 10 --fps 30 --optional
 TimeoutStartSec=60
 StandardOutput=journal
 StandardError=journal
