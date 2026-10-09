@@ -35,12 +35,34 @@ trap cleanup EXIT INT TERM
 
 echo "현재 테마: $(plymouth-set-default-theme 2>/dev/null || echo '알 수 없음')"
 
+for f in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+    [[ -f $f ]] || continue
+    if grep -qw plymouth.ignore-serial-consoles "$f" \
+        && ! grep -qw plymouth.ignore-serial-consoles /proc/cmdline; then
+        echo "참고: $f 에는 plymouth.ignore-serial-consoles 가 있는데 지금 돌고 있는"
+        echo "      커널에는 없습니다. 재부팅해야 실제로 적용됩니다."
+    fi
+    break
+done
+
 pkill -x plymouthd >/dev/null 2>&1   # 돌고 있으면 먼저 치운다
 sleep 1
 rm -f "$LOG"
 
+# 돌고 있는 커널의 cmdline 은 부팅 시점 것이라, cmdline.txt 를 고쳐도 재부팅 전에는
+# 반영되지 않는다. plymouthd 는 --kernel-command-line 으로 가짜 cmdline 을 받을 수
+# 있으므로, 미리보기에서는 재부팅 뒤에 적용될 내용을 그대로 흉내 낸다.
+KCMD="$(tr -d '\0' < /proc/cmdline)"
+for need in splash plymouth.ignore-serial-consoles; do
+    case " $KCMD " in
+        *" $need "*) ;;
+        *) KCMD="$KCMD $need"; echo "미리보기용으로 '$need' 를 넣고 띄웁니다 (재부팅하면 실제로 적용됨)" ;;
+    esac
+done
+
 echo "plymouth 를 띄웁니다 (${SECS}초)..."
-plymouthd --no-daemon --debug --debug-file="$LOG" --mode=boot --tty=/dev/tty1 &
+plymouthd --no-daemon --debug --debug-file="$LOG" --mode=boot --tty=/dev/tty1 \
+    --kernel-command-line="$KCMD" &
 sleep 2
 plymouth --show-splash
 sleep "$SECS"

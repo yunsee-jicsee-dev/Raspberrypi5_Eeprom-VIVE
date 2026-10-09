@@ -102,9 +102,13 @@ sudo scripts/preview-plymouth.sh        # 8초 동안 띄워 본다
 sudo scripts/preview-plymouth.sh 15     # 15초
 ```
 
-지금 바로 화면에 띄워 보고, 끝나면 테마 스크립트의 오류를 찍어 준다.
-문법이 틀렸다면 몇 번째 줄인지 나온다. 무슨 일이 있어도 plymouth 를 화면에서
-치우고 끝낸다(trap).
+지금 바로 화면에 띄워 보고, 끝나면 테마 스크립트의 오류와 렌더러 상태를
+찍어 준다. 무슨 일이 있어도 plymouth 를 화면에서 치우고 끝낸다(trap).
+
+`cmdline.txt` 를 고쳐도 **돌고 있는 커널의 명령줄은 부팅 시점 것**이라 재부팅
+전에는 반영되지 않는다. 그래서 미리보기는 `plymouthd --kernel-command-line` 으로
+`splash` 와 `plymouth.ignore-serial-consoles` 가 들어간 상태를 흉내 낸다.
+재부팅 뒤에 보일 모습을 재부팅 없이 확인할 수 있다.
 
 되돌리기:
 
