@@ -25,36 +25,45 @@ sudo apt install -y python3-pygame
 sudo scripts/try-intro.sh
 ```
 
-kms 와 fb 로 차례로 재생해 보고, 보이는 쪽이 있으면 그때 설치한다:
+설치는 두 가지 방식이 있다.
+
+### 기본 — 세션 방식 (부팅을 막을 수 없음)
 
 ```bash
 sudo scripts/install-bootintro.sh
-sudo reboot
 ```
 
-### 부팅이 막히면
+`~/.config/autostart/` 에 항목을 넣어 로그인 후 전체화면 창으로 재생한다.
+**부팅 경로에 아무것도 넣지 않으므로 이것 때문에 부팅이 막힐 수 없다.**
+대신 바탕화면이 그려진 뒤에 프로세스가 시작되므로 바탕화면이 잠깐 보인다.
 
-`cmdline.txt` 한 줄 끝에 한 칸 띄고 붙이면 이 서비스만 건너뛰고 평소대로 부팅된다:
+### 부팅 방식 (바탕화면이 안 비치는 대신 위험)
+
+```bash
+sudo scripts/install-bootintro.sh --boot
+```
+
+`multi-user.target` 과 `display-manager.service` 사이에 systemd 서비스를
+끼워 넣는다. 바탕화면이 비칠 일이 없는 대신 **부팅 경로에 들어간다.**
+문제가 생기면 부팅이 막히므로, 확인을 한 번 받고 설치한다.
+
+막혔을 때는 `cmdline.txt` 한 줄 끝에 한 칸 띄고:
 
 ```
 systemd.mask=rpi5-bootintro.service
 ```
 
-부트 파티션은 FAT32 라서 SD 카드를 다른 컴퓨터(폰도 된다) 에 꽂아 고칠 수 있다.
-부팅된 뒤 `sudo scripts/install-bootintro.sh --uninstall` 로 제거하면 된다.
+**이건 그 부팅 한 번만 유효하다.** 부팅된 뒤 반드시 지워야 한다:
 
-서비스 쪽에도 안전장치를 걸어 뒀다. `--max-seconds 20` 으로 프로그램이 스스로
-끝나고, `TimeoutStartSec=30` 으로 systemd 가 한 번 더 끊고, `--optional` 이라
-화면을 못 열면 조용히 넘어간다. 부팅이 이것 때문에 멈추지 않는다.
+```bash
+sudo scripts/install-bootintro.sh --uninstall
+```
 
-`rpi5-bootintro.service` 가 **`multi-user.target` 과 `display-manager.service`
-사이**에 들어간다. 여기가 유일하게 맞는 자리다.
+지우지 않고 mask 만 빼면 다음 부팅에서 또 막힌다.
 
-- 그 앞: 올라올 서비스는 이미 다 올라왔다 (부팅 과정을 붙잡지 않는다)
-- 그 뒤: 컴포지터가 아직 시작되지 않아 `/dev/fb0` 이 우리 것이다
-
-데스크톱(바탕화면) 은 인트로 3.7초가 끝난 뒤에 시작한다. 그래서 바탕화면이
-먼저 비칠 일이 없다.
+서비스 쪽 안전장치: `--max-seconds 20` 으로 프로그램이 스스로 끊고,
+`TimeoutStartSec=30` 으로 systemd 가 한 번 더 끊고, `--optional` 이라
+화면을 못 열면 조용히 넘어간다.
 
 ### 왜 데스크톱 세션 안에서는 안 되나
 
