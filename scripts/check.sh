@@ -6,6 +6,7 @@
 #   1. 파이썬과 pygame 이 있는가
 #   2. 인트로가 그려지기는 하는가        ← 화면 없이도 확인된다
 #   3. 이 화면에 띄울 수 있는가          ← 데스크톱이면 창, 콘솔이면 KMS/fb
+#   4. ST7735 SPI LCD 가 붙어 있다면 거기에도
 #
 # 1~2 가 되면 연출과 코드는 멀쩡한 것이고, 남은 문제는 전부 "어디에 띄우느냐"다.
 set -uo pipefail
@@ -83,5 +84,39 @@ else
         bad "콘솔에서는 둘 다 안 보였습니다."
         note "부팅 스플래시는 plymouth 가 담당하므로 이것과 별개입니다:"
         note "    sudo boot/install.sh  후  sudo boot/preview.sh"
+    fi
+fi
+
+echo
+echo "===== 4. ST7735 SPI LCD ====="
+if [[ ! -e /dev/spidev0.0 && ! -e /dev/spidev0.1 ]]; then
+    note "SPI 장치(/dev/spidev*) 가 없습니다. LCD 를 안 쓰면 넘어가세요."
+    note "쓰려면:  sudo raspi-config nonint do_spi 0   후 재부팅"
+else
+    ok "$(ls /dev/spidev* | tr '\n' ' ')"
+    miss=""
+    for m in spidev gpiozero; do
+        python3 -c "import $m" 2>/dev/null || miss="$miss python3-$m"
+    done
+    if [[ -n $miss ]]; then
+        bad "파이썬 모듈이 없습니다:  sudo apt install -y$miss python3-lgpio"
+    else
+        ok "spidev / gpiozero 있음"
+        echo
+        read -rp "LCD 에 인트로를 틀어 볼까요? (배선 확인됨 전제) [y/N] " yn
+        if [[ ${yn,,} == y ]]; then
+            [[ $EUID -eq 0 ]] || note "경고: sudo 없이는 SPI/GPIO 를 못 잡을 수 있습니다."
+            python3 "$PLAY" --display lcd --fps 30 --max-seconds 20 2>&1 | sed 's/^/         /'
+            echo
+            read -rp "LCD 에 보였나요? [y/N] " yn
+            if [[ ${yn,,} == y ]]; then
+                ok "부팅할 때도 틀려면:  sudo ./install.sh --lcd"
+            else
+                bad "안 보였습니다. 배선과 핀 번호를 확인하세요:"
+                note "  기본값 DC=25 RST=27 BL=24, SPI0 CE0. 다르면 --lcd-dc 등으로 지정"
+                note "  그림이 밀리면 --lcd-offset 1,2 / 색이 뒤바뀌면 --lcd-rgb"
+                note "  화면이 깨지면 --lcd-speed 16000000"
+            fi
+        fi
     fi
 fi

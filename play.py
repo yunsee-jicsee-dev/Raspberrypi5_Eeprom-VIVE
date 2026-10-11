@@ -6,6 +6,7 @@
     python3 play.py --display sdl        # 창으로
     python3 play.py --display sdl --fullscreen
     sudo python3 play.py --display kms   # 콘솔에서 화면을 직접 잡아서
+    sudo python3 play.py --display lcd   # ST7735 SPI LCD 에
     python3 play.py --save-frames out/   # 재생 대신 PNG 로 떨구기
     python3 play.py --loop               # 끝나면 다시 (전시용)
 
@@ -242,6 +243,74 @@ class SdlOutput:
         pygame.display.quit()
 
 
+def rgb565_be(surf):
+    """16bpp Surface → ST7735 가 먹는 RGB565 빅엔디안 바이트열.
+
+    pygame 의 16비트 Surface 는 호스트 바이트 순서(ARM = 리틀엔디안) 로 저장하는데
+    ST7735 는 빅엔디안으로 받는다. array.byteswap() 은 C 로 도니까 프레임마다
+    돌려도 부담이 없다.
+    """
+    w, h = surf.get_size()
+    pitch, row = surf.get_pitch(), w * 2
+    buf = memoryview(surf.get_buffer())
+    if pitch == row:
+        raw = bytes(buf[:row * h])
+    else:                                  # 줄 끝 패딩이 있으면 줄 단위로 추려낸다
+        raw = b"".join(bytes(buf[y * pitch:y * pitch + row]) for y in range(h))
+    del buf
+    if sys.byteorder == "little":
+        a = array.array("H")
+        a.frombytes(raw)
+        a.byteswap()
+        return a.tobytes()
+    return raw
+
+
+class LcdOutput:
+    """ST7735 SPI LCD. 패널 크기에 맞춰 가운데에 정수 배율로 올린다."""
+
+    name = "lcd"
+
+    def __init__(self, canvas_size, a):
+        import lcd as lcd_mod
+
+        bus, _, dev = a.lcd_spi.partition(".")
+        panel = lcd_mod.ST7735(
+            lcd_mod.open_spi(int(bus), int(dev or 0), a.lcd_speed),
+            dc=lcd_mod.Pin(a.lcd_dc),
+            rst=lcd_mod.Pin(a.lcd_rst) if a.lcd_rst >= 0 else None,
+            bl=lcd_mod.Pin(a.lcd_bl) if a.lcd_bl >= 0 else None,
+            width=a.lcd_size[0], height=a.lcd_size[1],
+            rotation=a.lcd_rotation, offset=a.lcd_offset,
+            bgr=not a.lcd_rgb, invert=a.lcd_invert)
+        panel.begin()
+        self.panel = panel
+
+        cw, ch = canvas_size
+        scale = max(1, min(panel.width // cw, panel.height // ch))
+        if a.max_scale:
+            scale = min(scale, a.max_scale)
+        self.scale = scale
+        self._zoom = pygame.Surface((cw * scale, ch * scale))
+        self.dest = ((panel.width - cw * scale) // 2, (panel.height - ch * scale) // 2)
+        # 패널과 픽셀 배치가 같은 Surface. 여기 그려서 그대로 밀어 넣는다.
+        self.screen = pygame.Surface((panel.width, panel.height), 0, 16,
+                                     (0xF800, 0x07E0, 0x001F, 0))
+        self.screen.fill((0, 0, 0))
+
+    def show(self, canvas):
+        pygame.transform.scale(canvas, self._zoom.get_size(), self._zoom)
+        self.screen.blit(self._zoom, self.dest)
+        self.panel.show(rgb565_be(self.screen))
+
+    def close(self, blank=True):
+        try:
+            if blank:
+                self.panel.blank()
+        finally:
+            self.panel.close(backlight_off=blank)
+
+
 class FrameDumpOutput:
     """프레임을 PNG 로 저장. 하드웨어 없이 연출을 확인할 때."""
 
@@ -367,16 +436,27 @@ def parse_size(txt):
         raise argparse.ArgumentTypeError("400x240 처럼 적어 주세요")
 
 
+def parse_pair(txt):
+    """'1,2' → (1, 2)"""
+    try:
+        x, y = (int(v) for v in txt.split(","))
+        return x, y
+    except ValueError:
+        raise argparse.ArgumentTypeError("1,2 처럼 적어 주세요")
+
+
 def build_parser():
     p = argparse.ArgumentParser(description="부팅 때 라즈베리파이 5 인트로 재생")
-    p.add_argument("--display", choices=("auto", "kms", "fb", "sdl", "frames"), default="auto",
-                   help="auto: 데스크톱이면 전체화면 창, 아니면 kms → fb 순서 (기본)")
+    p.add_argument("--display", choices=("auto", "kms", "fb", "sdl", "lcd", "frames"),
+                   default="auto",
+                   help="auto: 데스크톱이면 전체화면 창, 아니면 kms → fb 순서 (기본). "
+                        "lcd 는 ST7735 SPI LCD")
     p.add_argument("--fbdev", default=FB_DEFAULT, help=f"프레임버퍼 장치 (기본 {FB_DEFAULT})")
     p.add_argument("--fb-geometry", type=parse_geometry, metavar="WxH@BPP",
                    help="화면 정보를 못 읽을 때 직접 지정")
     p.add_argument("--fb-stride", type=int, help="한 줄의 바이트 수 직접 지정")
-    p.add_argument("--size", type=parse_size, default=(CANVAS_W, CANVAS_H), metavar="WxH",
-                   help=f"인트로 원본 크기 (기본 {CANVAS_W}x{CANVAS_H})")
+    p.add_argument("--size", type=parse_size, default=None, metavar="WxH",
+                   help=f"인트로 원본 크기 (기본 {CANVAS_W}x{CANVAS_H}, --display lcd 면 패널 크기)")
     p.add_argument("--max-scale", type=int, default=0, help="확대 배율 상한 (0=제한 없음)")
     p.add_argument("--window-scale", type=int, default=3, help="--display sdl 의 창 배율")
     p.add_argument("--fullscreen", dest="fullscreen", action="store_true", default=None,
@@ -395,6 +475,24 @@ def build_parser():
     p.add_argument("--no-blank", action="store_true", help="끝나고 화면을 지우지 않기")
     p.add_argument("--save-frames", metavar="DIR", help="--display frames 의 저장 폴더")
     p.add_argument("--every", type=int, default=1, help="프레임 저장 간격")
+    g = p.add_argument_group("ST7735 SPI LCD (--display lcd)")
+    g.add_argument("--lcd-spi", default="0.0", metavar="BUS.DEV",
+                   help="/dev/spidev<BUS>.<DEV> (기본 0.0)")
+    g.add_argument("--lcd-speed", type=int, default=32_000_000, metavar="HZ",
+                   help="SPI 속도 (기본 32MHz). 화면이 깨지면 낮춰 보세요")
+    g.add_argument("--lcd-dc", type=int, default=25, help="DC/RS 핀 (기본 GPIO 25)")
+    g.add_argument("--lcd-rst", type=int, default=27, help="RST 핀 (기본 GPIO 27, 없으면 -1)")
+    g.add_argument("--lcd-bl", type=int, default=24, help="백라이트 핀 (기본 GPIO 24, 없으면 -1)")
+    g.add_argument("--lcd-size", type=parse_size, default=(160, 128), metavar="WxH",
+                   help="패널 해상도 (기본 160x128)")
+    g.add_argument("--lcd-rotation", type=int, default=90, choices=(0, 90, 180, 270),
+                   help="화면 방향 (기본 90 = 가로)")
+    g.add_argument("--lcd-offset", type=parse_pair, default=(0, 0), metavar="X,Y",
+                   help="RAM 시작 위치. 그림이 몇 픽셀 밀려 보이면 1,2 또는 2,1")
+    g.add_argument("--lcd-rgb", action="store_true",
+                   help="색이 빨강↔파랑 뒤바뀌면 (기본은 BGR)")
+    g.add_argument("--lcd-invert", action="store_true", help="흑백이 반전돼 보이면")
+
     p.add_argument("--max-seconds", type=float, default=0.0, metavar="SEC",
                    help="이 시간이 지나면 무조건 종료 (0=제한 없음). 부팅용 안전장치")
     p.add_argument("--optional", action="store_true",
@@ -438,6 +536,9 @@ def open_fb(a, canvas_size, quiet):
 def main(argv=None):
     a = build_parser().parse_args(argv)
     arm_watchdog(a.max_seconds)   # 다른 무엇보다 먼저
+    # LCD 는 패널에 맞춰 그려야 글자 배율(k) 이 제대로 잡힌다
+    if a.size is None:
+        a.size = a.lcd_size if a.display == "lcd" else (CANVAS_W, CANVAS_H)
     cw, ch = a.size
     k = 2 if cw >= 320 else 1   # 글자 배율: LCD 처럼 작은 화면은 1
 
@@ -455,7 +556,7 @@ def main(argv=None):
     if mode == "auto":
         chain = ["sdl"] if on_desktop else ["kms", "fb"]
     else:
-        chain = [mode]
+        chain = [mode]   # lcd 를 콕 집었으면 다른 데로 떨어지지 않는다
 
     if "fb" in chain and a.wait_fb and not wait_for_fb(a.fbdev, a.wait_fb):
         print(f"{a.fbdev} 가 {a.wait_fb}초 안에 안 나타났어요", file=sys.stderr)
@@ -478,6 +579,11 @@ def main(argv=None):
                 out = open_kms((cw, ch), a.max_scale, a.wait_display)
                 if not a.quiet:
                     print(f"[인트로] kms {out.win.get_size()}, {out.scale}배 확대")
+            elif want == "lcd":
+                out = LcdOutput((cw, ch), a)
+                if not a.quiet:
+                    print(f"[인트로] lcd {out.panel.width}x{out.panel.height} "
+                          f"@spidev{a.lcd_spi}, {out.scale}배 확대")
             elif want == "frames":
                 out = FrameDumpOutput(a.save_frames or "frames", a.every)
             else:
@@ -488,7 +594,9 @@ def main(argv=None):
                 if not a.quiet:
                     print(f"[인트로] sdl {out.win.get_size()}, {out.scale}배 확대")
             break
-        except (FramebufferError, pygame.error, OSError) as e:
+        except (FramebufferError, pygame.error, OSError, ImportError) as e:
+            problems.append(f"{want}: {e}")
+        except Exception as e:                 # lcd.LcdError 등
             problems.append(f"{want}: {e}")
 
     if out is None:

@@ -15,6 +15,7 @@ sudo apt install -y python3-pygame
 1. 파이썬과 pygame 이 있는가
 2. **인트로가 그려지기는 하는가** — 화면이 없어도 확인된다
 3. 이 화면에 띄울 수 있는가 — 데스크톱이면 창, 콘솔이면 KMS/프레임버퍼
+4. ST7735 SPI LCD 가 붙어 있다면 거기에도
 
 2번까지 되면 연출과 코드는 멀쩡한 것이고, 남은 문제는 전부 "어디에 띄우느냐"다.
 설치는 그 다음이다.
@@ -58,6 +59,46 @@ sudo boot/preview.sh        # 콘솔(Ctrl+Alt+F2) 에서
 
 제거: `sudo boot/install.sh --uninstall`
 
+### ST7735 SPI LCD
+
+HDMI 와 별개로, SPI LCD 에도 같은 인트로를 띄울 수 있다.
+
+```bash
+sudo apt install -y python3-spidev python3-gpiozero python3-lgpio
+sudo raspi-config nonint do_spi 0       # SPI 켜기 (후 재부팅)
+sudo python3 play.py --display lcd      # 배선 확인
+sudo ./install.sh --lcd                 # 부팅할 때 LCD 에도
+```
+
+160x128 패널 기준으로 인트로를 그 크기에 맞춰 그린다(`intro.py` 가 원래 이
+크기를 염두에 두고 쓰였다). 확대는 하지 않으므로 도트가 그대로 나온다.
+
+**기본 배선** — 다르면 옵션으로 지정한다.
+
+| LCD | 파이 | 옵션 |
+| --- | --- | --- |
+| SCL/CLK | GPIO 11 (SCLK) | `--lcd-spi 0.0` |
+| SDA/DIN | GPIO 10 (MOSI) | 〃 |
+| CS | GPIO 8 (CE0) | 〃 |
+| DC/RS | GPIO 25 | `--lcd-dc` |
+| RST | GPIO 27 | `--lcd-rst` (없으면 `-1`) |
+| BL | GPIO 24 | `--lcd-bl` (없으면 `-1`) |
+
+**화면이 이상하면** — 패널(탭 색깔) 마다 달라서 옵션으로 맞춘다.
+
+| 증상 | 옵션 |
+| --- | --- |
+| 그림이 몇 픽셀 밀려 있다 | `--lcd-offset 1,2` 또는 `2,1` |
+| 빨강↔파랑이 뒤바뀐다 | `--lcd-rgb` |
+| 흑백이 반전돼 있다 | `--lcd-invert` |
+| 가로/세로가 틀렸다 | `--lcd-rotation 0\|90\|180\|270` |
+| 지직거리거나 깨진다 | `--lcd-speed 16000000` |
+
+LCD 서비스(`--lcd`) 는 **`Before=` 가 하나도 없다.** 아무도 기다리지 않으므로
+부팅을 붙잡을 수 없고, SPI LCD 는 DRM/plymouth 와 무관해서 화면을 두고 다툴
+일도 없다. HDMI 쪽에서 `Before=display-manager.service` 를 썼다가 기기를 못
+쓰게 만든 적이 있어서, 이쪽은 처음부터 그 구조를 피했다.
+
 ## 파일
 
 | 파일 | 하는 일 |
@@ -65,12 +106,14 @@ sudo boot/preview.sh        # 콘솔(Ctrl+Alt+F2) 에서
 | `intro.py` | 인트로 연출 (`Intro.draw(surf, t)`). 혼자 실행하면 창에서 미리보기 |
 | `pixelfont.py` | 5x7 비트맵 폰트. ttf 없이 글자를 그린다 |
 | `play.py` | 재생기. 화면에 인트로를 튼다. 하는 일은 그게 전부 |
+| `lcd.py` | ST7735/ST7735S SPI LCD 드라이버 (필요한 만큼만) |
 | `install.sh` | 로그인할 때 재생되게 설치/제거 |
 | `scripts/check.sh` | 설치 전 확인 사다리 |
 | `boot/make-theme.py` | 인트로를 PNG 로 구워 plymouth 테마 생성 |
 | `boot/install.sh` | 그 테마를 부팅 스플래시로 설치/복구 |
 | `boot/preview.sh` | 재부팅 없이 테마를 띄워 보고 원인 진단 |
 | `desktop/rpi5-intro.desktop` | 로그인 자동 실행 항목 |
+| `systemd/rpi5-intro-lcd.service` | 부팅 때 LCD 에 재생 (Before= 없음 = 비차단) |
 
 ## 손으로 돌려 보기
 
@@ -79,6 +122,7 @@ python3 intro.py                            # 창에서 반복 재생
 python3 intro.py --size 160x128             # LCD 크기로
 python3 play.py --display sdl --fullscreen  # 전체화면
 sudo python3 play.py --display kms          # 콘솔에서 화면을 직접 잡아서
+sudo python3 play.py --display lcd          # ST7735 SPI LCD 에
 python3 play.py --save-frames out/          # PNG 로 떨구기
 python3 boot/make-theme.py --fps 25 --zoom 3   # 테마만 구워 보기
 ```
@@ -118,6 +162,11 @@ python3 boot/make-theme.py --fps 25 --zoom 3   # 테마만 구워 보기
   번쩍임을 없앨 수 없다.
 - **`/dev/fb0` 은 KMS 환경에서 DRM 의 fbdev 흉내 장치**라 쓰기가 성공해도
   화면에 안 올라갈 수 있다. 그래서 `--display auto` 는 KMS 를 먼저 시도한다.
+- **파이 5 에서 RPi.GPIO 는 동작하지 않는다.** `lcd.py` 는 gpiozero(백엔드
+  lgpio) 를 쓰고, 없으면 lgpio 를 직접 쓴다.
+- **ST7735 는 RGB565 를 빅엔디안으로 받는다.** pygame 의 16비트 Surface 는
+  호스트 순서(ARM = 리틀엔디안) 라서 바이트를 뒤집어야 한다. `array.byteswap()`
+  이 C 로 돌아서 프레임마다 돌려도 부담이 없다.
 
 ### 부팅이 막혔을 때
 
