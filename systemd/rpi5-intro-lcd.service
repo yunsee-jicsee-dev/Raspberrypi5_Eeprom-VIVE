@@ -1,0 +1,25 @@
+# 부팅하면 ST7735 SPI LCD 에 인트로를 한 번 재생한다.
+#
+# 이 서비스는 부팅을 붙잡을 수 없다. 구조가 그렇다:
+#   - Before= 가 하나도 없다. 아무도 이 서비스를 기다리지 않으므로, 멈추든 말든
+#     부팅은 그냥 지나간다. (HDMI 쪽에서 Before=display-manager.service 를 썼다가
+#     기기를 못 쓰게 만든 적이 있다. 그 방식은 폐기했다.)
+#   - SPI LCD 는 DRM/plymouth 와 아무 상관이 없어서 화면을 두고 다툴 일이 없다.
+#   - --max-seconds 로 스스로 끝낸다.
+#
+# 설치:  sudo ./install.sh --lcd
+[Unit]
+Description=Raspberry Pi 5 intro on ST7735 LCD
+Documentation=https://github.com/yunsee-jicsee-dev/Raspberrypi5_Eeprom-VIVE
+After=multi-user.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/rpi5-intro
+ExecStart=/usr/bin/python3 /opt/rpi5-intro/play.py --display lcd --fps 30 --max-seconds 30
+TimeoutStartSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
