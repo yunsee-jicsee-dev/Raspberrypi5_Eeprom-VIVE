@@ -5,6 +5,7 @@
 #   sudo ./install.sh --lcd        위에 더해, 부팅할 때 ST7735 SPI LCD 에도
 #   sudo ./install.sh --unlock     인트로 뒤에 "획득!" 화면도 이어서
 #   sudo ./install.sh --model 4    로고 옆 금색 글자 바꾸기 (기본 5)
+#   sudo ./install.sh --kmsg       부팅할 때 커널 로그에 "얻었다!" 남기기
 #   sudo ./install.sh --uninstall  제거
 #
 # 옵션은 같이 쓸 수 있다:  sudo ./install.sh --lcd --unlock
@@ -19,6 +20,7 @@ export PYGAME_HIDE_SUPPORT_PROMPT=1
 PREFIX=/opt/rpi5-intro
 ENTRY=rpi5-intro.desktop
 LCD_UNIT=rpi5-intro-lcd.service
+KMSG_UNIT=rpi5-intro-kmsg.service
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { echo "오류: $*" >&2; exit 1; }
@@ -28,11 +30,13 @@ die() { echo "오류: $*" >&2; exit 1; }
 clean() {
     rm -f "$AUTOSTART/$ENTRY" "$AUTOSTART/rpi5-bootintro.desktop"
     rm -rf "$PREFIX" /opt/rpi5-bootintro
-    if [[ -e /etc/systemd/system/$LCD_UNIT ]]; then
-        systemctl disable --now "$LCD_UNIT" >/dev/null 2>&1 || true
-        rm -f "/etc/systemd/system/$LCD_UNIT"
-        systemctl daemon-reload >/dev/null 2>&1 || true
-    fi
+    for u in "$LCD_UNIT" "$KMSG_UNIT"; do
+        if [[ -e /etc/systemd/system/$u ]]; then
+            systemctl disable --now "$u" >/dev/null 2>&1 || true
+            rm -f "/etc/systemd/system/$u"
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+    done
     # 부팅 경로에 끼워 넣던 옛 서비스가 남아 있으면 치운다 (이 방식은 폐기했다)
     if [[ -e /etc/systemd/system/rpi5-bootintro.service ]]; then
         systemctl disable --now rpi5-bootintro.service >/dev/null 2>&1 || true
@@ -45,12 +49,14 @@ clean() {
 
 WITH_LCD=0
 WITH_UNLOCK=0
+WITH_KMSG=0
 MODEL=5
 MODE=install
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --lcd)        WITH_LCD=1 ;;
         --unlock)     WITH_UNLOCK=1 ;;
+        --kmsg)       WITH_KMSG=1 ;;
         --uninstall)  MODE=uninstall ;;
         --model)      shift; [[ $# -gt 0 ]] || die "--model 뒤에 글자를 적어 주세요"
                       MODEL="$1" ;;
@@ -121,6 +127,24 @@ LCD 쪽도 설치했습니다 — 부팅할 때 ST7735 에 재생됩니다.
     sudo systemctl start $LCD_UNIT
     sudo python3 $PREFIX/play.py --display lcd      # 직접 돌려서 배선 확인
 LCDTIP
+fi
+
+if [[ $WITH_KMSG == 1 ]]; then
+    install -m 644 "$SRC_DIR/systemd/$KMSG_UNIT" "/etc/systemd/system/$KMSG_UNIT"
+    systemctl daemon-reload
+    systemctl enable "$KMSG_UNIT"
+    cat <<KMSGTIP
+
+커널 로그 쪽도 설치했습니다 — 부팅할 때 "얻었다!" 가 커널 로그에 남습니다.
+이 서비스도 Before= 가 없어서 부팅을 붙잡을 수 없습니다.
+
+지금 바로:
+    sudo systemctl start $KMSG_UNIT && dmesg | grep rpi5-intro
+
+부팅 화면에 보이려면 cmdline.txt 에 quiet 와 splash 가 없어야 합니다.
+  splash 가 있으면 plymouth 가 화면을 덮습니다.
+  quiet 가 있으면 레벨을 낮춰야 합니다 (유닛의 --kmsg-level 2).
+KMSGTIP
 fi
 
 cat <<TIP

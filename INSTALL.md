@@ -89,6 +89,7 @@ ls
 | 바탕화면이 비치는 것도 싫다 | 위에 더해 `sudo boot/install.sh` |
 | 파이 4 라서 "4" 로 띄우고 싶다 | 위 명령에 `--model 4` 를 덧붙인다 |
 | 부팅 스플래시에도 "획득!" 화면 | `sudo boot/install.sh --unlock` |
+| 부팅 **커널 로그**에 "얻었다!" | `sudo ./install.sh --kmsg` |
 
 옵션은 같이 쓸 수 있다. 전부 되돌릴 수 있다.
 

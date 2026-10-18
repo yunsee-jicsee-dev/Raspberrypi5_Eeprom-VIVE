@@ -18,7 +18,12 @@ import glob
 import os
 import time
 
-import pygame
+# 커널 로그만 쓸 때는 pygame 이 필요 없다. 부팅 서비스에서 괜히 불러오지 않도록
+# 없어도 모듈이 올라가게 해 두고, 화면을 그릴 때만 있어야 한다.
+try:
+    import pygame
+except ImportError:                                  # pragma: no cover
+    pygame = None
 
 BG = (8, 8, 12)
 DIM = (96, 112, 104)       # 평범한 커널 로그 줄
@@ -70,6 +75,11 @@ def ascii_item(it):
     return it if it.isascii() else ASCII_ALIAS.get(it)
 
 
+def _need_pygame():
+    if pygame is None:
+        raise RuntimeError("화면을 그리려면 pygame 이 필요합니다:  sudo apt install -y python3-pygame")
+
+
 def _renders_hangul(font):
     """한글을 진짜로 그리는 폰트인지. 서로 다른 글자가 전부 같으면 네모(토푸) 다."""
     def shot(ch):
@@ -85,6 +95,7 @@ def _renders_hangul(font):
 
 def korean_font(size, want_path=False):
     """한글을 그릴 수 있는 폰트 하나. 없으면 None. want_path 면 (폰트, 경로)."""
+    _need_pygame()
     if not pygame.font.get_init():
         pygame.font.init()
     seen = []
@@ -136,7 +147,7 @@ def schedule(lines, cps=CPS, gap=GAP):
     return out, t + HOLD + FADE
 
 
-def to_kmsg(items=None, user=None, tag="rpi5-intro"):
+def to_kmsg(items=None, user=None, tag="rpi5-intro", level=6):
     """진짜 커널 로그(dmesg) 에 남긴다. root 여야 하고, 안 되면 조용히 넘어간다.
 
     두 가지를 지켜야 한다.
@@ -146,6 +157,10 @@ def to_kmsg(items=None, user=None, tag="rpi5-intro"):
        <6> 접두어가 글자 그대로 남는다. 그래서 줄마다 따로, 버퍼 없이 쓴다.
     2) 커널 기록은 ASCII 밖의 바이트를 \\xNN 으로 바꿔 저장한다. 한글을 넣으면
        dmesg 에 \\xec\\x9d\\x84 처럼 나와 읽을 수 없다. 그래서 ASCII 판을 쓴다.
+
+    level 은 커널 로그 레벨이다. 6(info) 은 dmesg 에는 남지만 cmdline 에 quiet
+    가 있으면 부팅 화면에는 안 나온다. 부팅 중 화면에 지나가게 하려면 4(warning)
+    이하로 낮춘다.
     """
     lines = build_lines(items, user, hangul=False)
     try:
@@ -156,7 +171,7 @@ def to_kmsg(items=None, user=None, tag="rpi5-intro"):
         for kind, text in lines:
             if kind == "rule" or not text:
                 continue
-            os.write(fd, f"<6>{tag}: {text}\n".encode("ascii", "replace"))
+            os.write(fd, f"<{level}>{tag}: {text}\n".encode("ascii", "replace"))
     except OSError:
         return False
     finally:
@@ -168,6 +183,7 @@ class Unlock:
     """획득 장면 한 판. intro.Intro 와 같은 쓰임새."""
 
     def __init__(self, text, w, h, k=1, items=None, user=None):
+        _need_pygame()
         self.w, self.h, self.k = w, h, k
         self.pixel = text                      # pixelfont (ASCII 폴백용)
 
@@ -285,11 +301,26 @@ def demo(argv=None):
     import argparse
     import intro
 
-    ap = argparse.ArgumentParser(description="획득 장면 미리보기")
+    ap = argparse.ArgumentParser(description="획득 장면 미리보기 / 커널 로그 쓰기")
+    ap.add_argument("--kmsg", action="store_true",
+                    help="화면에 띄우지 않고 커널 로그(dmesg) 에만 쓰고 끝낸다 (root 필요)")
+    ap.add_argument("--kmsg-level", type=int, default=4, metavar="N",
+                    help="커널 로그 레벨 (기본 4=warning: quiet 여도 부팅 화면에 보인다. "
+                         "6=info 는 dmesg 에만)")
+    ap.add_argument("--items", nargs="*", metavar="이름", help="얻을 것들")
+    ap.add_argument("--user", help="사용자 이름")
     ap.add_argument("--size", default="400x240")
     ap.add_argument("--scale", type=int, default=3)
     ap.add_argument("--fps", type=int, default=30)
     a = ap.parse_args(argv)
+
+    if a.kmsg:
+        if to_kmsg(a.items, a.user, level=a.kmsg_level):
+            print("커널 로그에 썼습니다.  dmesg | grep rpi5-intro")
+            return 0
+        print("/dev/kmsg 에 못 썼어요 (root 여야 합니다)", file=__import__("sys").stderr)
+        return 1
+
     w, h = (int(v) for v in a.size.lower().split("x"))
 
     pygame.init()

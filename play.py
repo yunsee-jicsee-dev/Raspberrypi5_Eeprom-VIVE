@@ -436,7 +436,7 @@ def make_scene(name, canvas_size, k, a):
         import unlock
         sc = unlock.Unlock(intro.load_text(), cw, ch, k,
                            items=a.items, user=a.user)
-        if a.kmsg and not unlock.to_kmsg(a.items, a.user):
+        if a.kmsg and not unlock.to_kmsg(a.items, a.user, level=a.kmsg_level):
             print("[인트로] /dev/kmsg 에 못 썼어요 (root 여야 합니다)", file=sys.stderr)
         return sc
     return intro.Intro(intro.load_text(), cw, ch, k, a.model, a.title)
@@ -507,6 +507,8 @@ def build_parser():
     p.add_argument("--title", default="Raspberry Pi", help="로고 아래 글귀 (기본 Raspberry Pi)")
     p.add_argument("--kmsg", action="store_true",
                    help="--scene unlock 의 글귀를 진짜 커널 로그(dmesg) 에도 남긴다 (root 필요)")
+    p.add_argument("--kmsg-level", type=int, default=4, metavar="N",
+                   help="커널 로그 레벨 (기본 4=warning: 부팅 화면에도 보인다)")
     p.add_argument("--display", choices=("auto", "kms", "fb", "sdl", "lcd", "frames"),
                    default="auto",
                    help="auto: 데스크톱이면 전체화면 창, 아니면 kms → fb 순서 (기본). "

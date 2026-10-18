@@ -99,7 +99,29 @@ python3 play.py --scene unlock --items python vim docker "관리자 권한"
 
 `을/를` 은 받침을 보고 고른다. 한글이 아니면 판단할 수 없으니 `을(를)` 로 적는다.
 
-**진짜 커널 로그에도** 남기려면 (`dmesg` 에 보인다, root 필요):
+**커널 로그에 남기기** — 부팅 메시지 사이에 끼워 넣는 쪽:
+
+```bash
+sudo python3 unlock.py --kmsg        # 지금 한 번 쓰고 끝
+sudo ./install.sh --kmsg             # 부팅할 때마다
+```
+
+화면은 건드리지 않고 `/dev/kmsg` 에만 쓴다. pygame 도 필요 없다.
+
+```
+[    8.990311] rpi5-intro: YOU OBTAINED: sudo
+[    8.991763] rpi5-intro: YOU OBTAINED: python
+```
+
+**부팅 화면에 지나가게 하려면** `cmdline.txt` 에 `quiet` 와 `splash` 가 없어야
+한다. `splash` 가 있으면 plymouth 가 화면을 덮고, `quiet` 가 있으면 콘솔
+로그레벨이 4 로 내려가 이 줄(레벨 5)이 걸러진다. `quiet` 를 유지한 채 보이게
+하려면 `--kmsg-level 2` 로 낮춘다.
+
+커널은 사용자 영역에서 쓴 레벨을 한 단계 올린다 (`<4>` → 5). 그래서 기본을
+4 로 잡아 뒀다.
+
+재생하면서 같이 쓰려면:
 
 ```bash
 sudo python3 play.py --scene unlock --kmsg
@@ -168,7 +190,7 @@ LCD 서비스(`--lcd`) 는 **`Before=` 가 하나도 없다.** 아무도 기다�
 | `intro.py` | 인트로 연출 (`Intro.draw(surf, t)`). 혼자 실행하면 창에서 미리보기 |
 | `pixelfont.py` | 5x7 비트맵 폰트. ttf 없이 글자를 그린다 |
 | `play.py` | 재생기. 장면을 화면에 튼다 (`--scene intro unlock` 처럼 이어 붙일 수 있다) |
-| `unlock.py` | "획득!" 장면 + 커널 로그 쓰기 |
+| `unlock.py` | "획득!" 장면 + 커널 로그 쓰기 (`--kmsg` 만 쓰면 pygame 불필요) |
 | `lcd.py` | ST7735/ST7735S SPI LCD 드라이버 (필요한 만큼만) |
 | `install.sh` | 로그인할 때 재생되게 설치/제거 |
 | `scripts/check.sh` | 설치 전 확인 사다리 |
@@ -177,6 +199,7 @@ LCD 서비스(`--lcd`) 는 **`Before=` 가 하나도 없다.** 아무도 기다�
 | `boot/preview.sh` | 재부팅 없이 테마를 띄워 보고 원인 진단 |
 | `desktop/rpi5-intro.desktop` | 로그인 자동 실행 항목 |
 | `systemd/rpi5-intro-lcd.service` | 부팅 때 LCD 에 재생 (Before= 없음 = 비차단) |
+| `systemd/rpi5-intro-kmsg.service` | 부팅 때 커널 로그에 "얻었다!" (Before= 없음) |
 
 ## 손으로 돌려 보기
 
@@ -236,6 +259,8 @@ python3 boot/make-theme.py --fps 25 --zoom 3   # 테마만 구워 보기
   `<6>` 접두어가 글자 그대로 남는다. 줄마다 따로, 버퍼 없이 써야 한다.
 - **커널 로그는 ASCII 밖의 바이트를 `\xNN` 으로 바꿔 저장한다.** 한글을 넣으면
   `dmesg` 에서 읽을 수 없다.
+- **커널은 사용자 영역에서 쓴 로그 레벨을 한 단계 올린다** (`<4>` 로 쓰면 5 로
+  저장된다). 부팅 화면에 보이게 하려면 그걸 감안해 낮춰 잡아야 한다.
 - **ST7735 는 RGB565 를 빅엔디안으로 받는다.** pygame 의 16비트 Surface 는
   호스트 순서(ARM = 리틀엔디안) 라서 바이트를 뒤집어야 한다. `array.byteswap()`
   이 C 로 돌아서 프레임마다 돌려도 부담이 없다.

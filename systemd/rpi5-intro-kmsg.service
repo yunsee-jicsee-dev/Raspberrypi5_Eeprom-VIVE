@@ -1,0 +1,29 @@
+# 부팅할 때 "당신은 ~ 얻었다!" 를 커널 로그에 남긴다.
+# 부팅 메시지가 화면에 지나가는 중이면 그 사이에 같이 찍히고, 아니어도
+# dmesg 에는 남는다.
+#
+# 이 서비스는 부팅을 붙잡을 수 없다.
+#   - Before= 가 하나도 없다. 아무도 기다리지 않는다.
+#   - 하는 일이 /dev/kmsg 에 여덟 줄 쓰는 게 전부다. 링 버퍼 쓰기라 멈출 수 없다.
+#   - pygame 도 화면도 건드리지 않는다.
+#
+# 화면에 보이려면 cmdline.txt 에 quiet 와 splash 가 없어야 한다.
+#   quiet  → 콘솔 로그레벨이 4 로 내려가 이 줄(레벨 5)이 안 보인다.
+#            그래도 보이게 하려면 --kmsg-level 2 로 낮춘다.
+#   splash → plymouth 가 화면을 덮어 부팅 메시지 자체가 안 보인다.
+#
+# 설치:  sudo ./install.sh --kmsg
+[Unit]
+Description=Raspberry Pi 5 intro — 커널 로그에 획득 메시지
+Documentation=https://github.com/yunsee-jicsee-dev/Raspberrypi5_Eeprom-VIVE
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/rpi5-intro/unlock.py --kmsg
+TimeoutStartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
