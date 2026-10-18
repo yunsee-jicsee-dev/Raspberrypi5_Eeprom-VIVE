@@ -55,12 +55,23 @@ find_cmdline() {
 
 MODE=install
 TOUCH_CMDLINE=1
-for arg in "$@"; do
-    case "$arg" in
+SCENES="intro"
+MODEL=5
+FPS=""        # 비우면 장면 수를 보고 정한다
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --uninstall)  MODE=uninstall ;;
         --no-cmdline) TOUCH_CMDLINE=0 ;;
-        *)            die "모르는 옵션: $arg" ;;
+        --unlock)     SCENES="intro unlock" ;;
+        --fps)        shift; [[ $# -gt 0 ]] || die "--fps 뒤에 숫자를 적어 주세요"
+                      FPS="$1" ;;
+        --fps=*)      FPS="${1#*=}" ;;
+        --model)      shift; [[ $# -gt 0 ]] || die "--model 뒤에 글자를 적어 주세요"
+                      MODEL="$1" ;;
+        --model=*)    MODEL="${1#*=}" ;;
+        *)            die "모르는 옵션: $1" ;;
     esac
+    shift
 done
 
 command -v plymouth-set-default-theme >/dev/null \
@@ -96,8 +107,13 @@ python3 -c "import pygame" 2>/dev/null \
 BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 echo "인트로 프레임을 굽는 중..."
+# plymouth 는 프레임을 전부 메모리에 올린다. 장면이 둘이면 길이가 두 배가 되므로
+# 프레임레이트를 낮춰 잡는다 (plymouth 갱신이 초당 50회라 50 의 약수여야 한다).
+if [[ -z $FPS ]]; then
+    if [[ $SCENES == *unlock* ]]; then FPS=10; else FPS=25; fi
+fi
 python3 "$SRC_DIR/boot/make-theme.py" --out "$BUILD" --theme-dir "$THEME_DIR" \
-    | sed 's/^/  /'
+    --scene $SCENES --model "$MODEL" --fps "$FPS" 2>&1 | sed 's/^/  /'
 [[ -f "$BUILD/$NAME/$NAME.plymouth" ]] || die "테마를 만들지 못했습니다."
 
 # ---- 설치 ----

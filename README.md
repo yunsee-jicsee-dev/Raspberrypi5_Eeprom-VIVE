@@ -64,26 +64,31 @@ sudo boot/preview.sh        # 콘솔(Ctrl+Alt+F2) 에서
 
 ### "획득!" 화면
 
-로그인하면 커널 로그처럼 생긴 화면이 올라오면서 뭘 얻었는지 알려 준다.
-
 ```
-[    0.400000] systemd[1]: Reached target graphical.target
-[    0.770000] login: jicsee logged in on wayland
-[    1.140000] 권한 목록 확인 중 ...
-────────────────────────────
 ★ 당신은 sudo 권한을 얻었다!
-★ python을(를) 얻었다!
-★ chromium을(를) 얻었다!
-★ firefox을(를) 얻었다!
-★ 설정 권한을 얻었다!
-★ ... 등등을 얻었다!
+★ 당신은 python을(를) 얻었다!
+★ 당신은 chromium을(를) 얻었다!
+★ 당신은 firefox을(를) 얻었다!
+★ 당신은 설정 권한을 얻었다!
+★ 당신은 ... 등등을 얻었다!
 ```
 
 ```bash
 python3 unlock.py                                  # 창에서 미리보기
 python3 play.py --scene unlock --display sdl       # 재생기로
 python3 play.py --scene intro unlock               # 인트로 뒤에 이어서
-sudo ./install.sh --unlock                         # 로그인할 때 둘 다
+```
+
+**부팅 스플래시에 넣기** (plymouth):
+
+```bash
+sudo boot/install.sh --unlock
+```
+
+**로그인할 때 넣기**:
+
+```bash
+sudo ./install.sh --unlock
 ```
 
 얻는 것 목록은 바꿀 수 있다:
@@ -113,8 +118,8 @@ sudo python3 play.py --scene unlock --kmsg
 것보다 낫다. 폰트가 한글을 진짜로 그리는지는 **서로 다른 한글이 전부 같은
 그림으로 나오는지** 보고 판단한다 (토푸는 다 같은 네모다).
 
-좁은 화면(LCD 등) 에서는 시각 표시와 긴 커널 줄을 빼고 짧게 간다. 160픽셀에
-`systemd[1]: Reached target graphical.target` 은 들어가지 않는다.
+**부팅 스플래시에서는 폰트가 필요 없다.** plymouth 테마는 프레임을 미리 PNG 로
+구워 두므로 글자가 그림으로 박힌다.
 
 ### ST7735 SPI LCD
 

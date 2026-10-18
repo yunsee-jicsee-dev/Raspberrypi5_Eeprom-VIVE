@@ -1,9 +1,8 @@
-"""로그인하면 뜨는 "획득!" 장면 — 커널 로그처럼 생긴 화면.
+"""로그인하면 뜨는 "획득!" 장면.
 
-    [    0.412913] login: jicsee logged in on tty7
-    [    0.998214] 권한 목록 확인 중...
     ★ 당신은 sudo 권한을 얻었다!
-    ★ python 을(를) 얻었다!
+    ★ 당신은 python을(를) 얻었다!
+    ★ 당신은 chromium을(를) 얻었다!
     ...
 
 intro.Intro 와 같은 모양(draw(surf, t), LENGTH) 이라 play.py 가 그대로 쓴다.
@@ -23,7 +22,6 @@ import pygame
 
 BG = (8, 8, 12)
 DIM = (96, 112, 104)       # 평범한 커널 로그 줄
-TIME_COL = (70, 84, 80)    # [   0.123456] 부분
 GOT = (254, 196, 72)       # 획득 줄
 STAR = (255, 236, 160)
 WHITE = (236, 240, 238)
@@ -108,53 +106,24 @@ def korean_font(size, want_path=False):
 
 
 def build_lines(items=None, user=None, hangul=True, compact=False):
-    """(종류, 글귀) 목록. 종류: 'log' 평범한 줄, 'got' 획득, 'rule' 구분선.
+    """(종류, 글귀) 목록. 지금은 획득 줄('got') 만 낸다.
 
-    compact 는 LCD 처럼 좁은 화면용 — 긴 커널 줄을 빼고 시각 표시도 생략한다.
-    160픽셀 폭에 "systemd[1]: Reached target graphical.target" 은 들어가지 않는다.
+    user 는 안 쓰지만, 글귀에 이름을 넣고 싶어질 때를 위해 자리를 남겨 둔다.
+    compact 는 LCD 처럼 좁은 화면용 — 지금은 글귀가 짧아서 차이가 없다.
     """
-    user = user or os.environ.get("SUDO_USER") or os.environ.get("USER") or "pi"
     items = list(items) if items else list(DEFAULT_ITEMS)
-    tty = os.environ.get("XDG_SESSION_TYPE", "wayland")
 
     if not hangul:   # 한글 폰트가 없을 때
         safe = [a for a in (ascii_item(i) for i in items) if a]
-        if compact:
-            lines = [("log", "checking perms ..."), ("rule", ""),
-                     ("got", "sudo")]
-            lines += [("got", it) for it in safe]
-            lines += [("got", "... and more!"), ("rule", ""),
-                      ("log", f"welcome, {user}")]
-            return lines
-        lines = [("log", "systemd[1]: Reached target graphical.target"),
-                 ("log", f"login: {user} logged in on {tty}"),
-                 ("log", "checking permissions ..."),
-                 ("rule", ""),
-                 ("got", "YOU OBTAINED: sudo")]
-        lines += [("got", f"YOU OBTAINED: {it}") for it in safe]
-        lines += [("got", "YOU OBTAINED: ... and more!"),
-                  ("rule", ""),
-                  ("log", f"welcome back, {user}.")]
-        return lines
+        got = ["YOU OBTAINED: sudo"]
+        got += [f"YOU OBTAINED: {it}" for it in safe]
+        got += ["YOU OBTAINED: ... and more!"]
+        return [("got", g) for g in got]
 
-    if compact:
-        lines = [("log", "권한 확인 중 ..."), ("rule", ""),
-                 ("got", "sudo 권한!")]
-        lines += [("got", f"{it}!") for it in items]
-        lines += [("got", "... 등등!"), ("rule", ""),
-                  ("log", f"{user} 님, 환영합니다")]
-        return lines
-
-    lines = [("log", "systemd[1]: Reached target graphical.target"),
-             ("log", f"login: {user} logged in on {tty}"),
-             ("log", "권한 목록 확인 중 ..."),
-             ("rule", ""),
-             ("got", "당신은 sudo 권한을 얻었다!")]
-    lines += [("got", f"{it}{particle(it)} 얻었다!") for it in items]
-    lines += [("got", "... 등등을 얻었다!"),
-              ("rule", ""),
-              ("log", f"{user} 님, 환영합니다.")]
-    return lines
+    got = ["당신은 sudo 권한을 얻었다!"]
+    got += [f"당신은 {it}{particle(it)} 얻었다!" for it in items]
+    got += ["당신은 ... 등등을 얻었다!"]
+    return [("got", g) for g in got]
 
 
 def schedule(lines, cps=CPS, gap=GAP):
@@ -233,7 +202,7 @@ class Unlock:
 
     def _width_of(self, text, k):
         """★ 과 시각 표시까지 더한 한 줄의 대략적인 가로 길이."""
-        prefix = "* " if self.compact else "[   0.000000] "
+        prefix = "* "            # ★ 자리. 획득 줄만 나오므로 이것만 센다
         if self.hangul:
             return self.font.size(text)[0] + self.font.size(prefix)[0]
         return (len(text) + len(prefix)) * 6 * k
@@ -250,11 +219,6 @@ class Unlock:
             self._cache[key] = img
         return img
 
-    def _stamp(self, i, done):
-        """[    1.234567] 커널 로그 시각. 줄 번호로 만들어서 매번 같게."""
-        v = 0.4 + i * 0.37 + (0.0 if done else 0.0)
-        return f"[{v:11.6f}] "
-
     # ---- 본 그림 ----
     def draw(self, surf, t):
         surf.fill(BG)
@@ -270,8 +234,11 @@ class Unlock:
                 shown.append((i, kind, text[:n], False))
 
         view = shown[-self.rows:]
-        y = self.h - self.pad - len(view) * self.line_h
-        y = max(self.pad, y)
+        # 다 들어가면 세로 가운데, 넘치면 아래에 붙여 위로 흘려보낸다
+        if len(self.lines) <= self.rows:
+            y = (self.h - len(self.lines) * self.line_h) // 2
+        else:
+            y = max(self.pad, self.h - self.pad - len(view) * self.line_h)
         for i, kind, text, done in view:
             x = self.pad
             if kind == "rule":
@@ -283,12 +250,8 @@ class Unlock:
                     surf.blit(star, (x, y))
                     x += star.get_width()
                     surf.blit(self._text(text, GOT), (x, y))
-                elif self.compact:
-                    surf.blit(self._text(text, DIM), (x, y))
                 else:
-                    stamp = self._text(self._stamp(i, done), TIME_COL)
-                    surf.blit(stamp, (x, y))
-                    surf.blit(self._text(text, DIM), (x + stamp.get_width(), y))
+                    surf.blit(self._text(text, DIM), (x, y))
                 if not done:                        # 커서
                     cw = max(2, self.k * 2)
                     img = self._text(text, GOT if kind == "got" else DIM)

@@ -88,6 +88,7 @@ ls
 | 거기에 SPI LCD 까지 | `sudo ./install.sh --lcd --unlock` |
 | 바탕화면이 비치는 것도 싫다 | 위에 더해 `sudo boot/install.sh` |
 | 파이 4 라서 "4" 로 띄우고 싶다 | 위 명령에 `--model 4` 를 덧붙인다 |
+| 부팅 스플래시에도 "획득!" 화면 | `sudo boot/install.sh --unlock` |
 
 옵션은 같이 쓸 수 있다. 전부 되돌릴 수 있다.
 
@@ -154,11 +155,16 @@ sudo apt install -y plymouth plymouth-themes
 sudo boot/install.sh
 ```
 
-파이 4 라면 테마를 구울 때도 같이 넘긴다:
+옵션:
 
 ```bash
-sudo boot/install.sh && sudo python3 boot/make-theme.py --model 4
+sudo boot/install.sh --unlock       # 인트로 뒤에 "획득!" 화면도
+sudo boot/install.sh --model 4      # 금색 글자를 4 로
+sudo boot/install.sh --fps 5        # 프레임을 줄여 메모리 아끼기
 ```
+
+plymouth 는 프레임을 전부 메모리에 올린다. `--unlock` 을 쓰면 길이가 두 배라
+기본 프레임레이트를 10 으로 낮춰 잡는다.
 
 스크립트가 알아서 한다: 테마 굽기 → 설치 → 이전 테마 기록 → `cmdline.txt` 에
 `splash` 와 `plymouth.ignore-serial-consoles` 넣기(백업 남김) → initramfs 다시 굽기.
