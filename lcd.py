@@ -209,7 +209,13 @@ class ST7735:
         self._write(rgb565_be)
 
     def blank(self):
-        self.show(b"\x00" * (self.width * self.height * 2))
+        self.fill((0, 0, 0))
+
+    def fill(self, rgb):
+        """화면 전체를 한 색으로. 배선과 속도를 가리는 데 쓴다."""
+        r, g, b = rgb
+        v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+        self.show(bytes([v >> 8, v & 0xFF]) * (self.width * self.height))
 
     def close(self, backlight_off=True):
         if self.bl is not None and backlight_off:

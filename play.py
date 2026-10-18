@@ -396,6 +396,39 @@ def wait_for_fb(path, seconds):
 
 
 # -------------------------------------------------------------------- 재생 --
+def lcd_test(out):
+    """단색 → 격자 순서로 띄워 어디까지 멀쩡한지 본다.
+
+    단색이 깨끗하면 배선과 SPI 속도는 괜찮다는 뜻이고, 남은 문제는 배치
+    (--lcd-offset / --lcd-rotation) 다. 단색부터 블록처럼 깨지면 속도를
+    낮추거나 배선을 다시 봐야 한다.
+    """
+    panel = out.panel
+    steps = [("빨강", (255, 0, 0)), ("초록", (0, 255, 0)), ("파랑", (0, 0, 255)),
+             ("흰색", (255, 255, 255)), ("검정", (0, 0, 0))]
+    for name, rgb in steps:
+        print(f"[검사] {name} {rgb}")
+        panel.fill(rgb)
+        time.sleep(1.2)
+
+    # 가장자리 한 픽셀 테두리 + 격자: 잘림과 밀림을 눈으로 본다
+    print("[검사] 테두리+격자 — 네 변이 다 보이면 --lcd-offset 이 맞는 겁니다")
+    w, h = panel.width, panel.height
+    surf = pygame.Surface((w, h), 0, 16, (0xF800, 0x07E0, 0x001F, 0))
+    surf.fill((0, 0, 0))
+    for x in range(0, w, 16):
+        surf.fill((40, 40, 40), (x, 0, 1, h))
+    for y in range(0, h, 16):
+        surf.fill((40, 40, 40), (0, y, w, 1))
+    pygame.draw.rect(surf, (255, 255, 0), (0, 0, w, h), 1)        # 노란 테두리
+    surf.fill((255, 0, 0), (0, 0, 8, 8))                          # 좌상단 빨강
+    surf.fill((0, 255, 0), (w - 8, h - 8, 8, 8))                  # 우하단 초록
+    panel.show(rgb565_be(surf))
+    time.sleep(4)
+    print("[검사] 끝. 노란 테두리 네 변이 다 보였나요?")
+    return 0
+
+
 def make_scene(name, canvas_size, k, a):
     """그릴 장면 하나. draw(surf, t) 와 LENGTH 만 있으면 된다."""
     cw, ch = canvas_size
@@ -505,8 +538,10 @@ def build_parser():
     g = p.add_argument_group("ST7735 SPI LCD (--display lcd)")
     g.add_argument("--lcd-spi", default="0.0", metavar="BUS.DEV",
                    help="/dev/spidev<BUS>.<DEV> (기본 0.0)")
-    g.add_argument("--lcd-speed", type=int, default=32_000_000, metavar="HZ",
-                   help="SPI 속도 (기본 32MHz). 화면이 깨지면 낮춰 보세요")
+    g.add_argument("--lcd-speed", type=int, default=16_000_000, metavar="HZ",
+                   help="SPI 속도 (기본 16MHz). 블록처럼 깨지면 8000000, 4000000 으로 낮춰 보세요")
+    g.add_argument("--lcd-test", action="store_true",
+                   help="인트로 대신 단색/격자 검사 화면을 띄운다 (배선·속도 확인용)")
     g.add_argument("--lcd-dc", type=int, default=25, help="DC/RS 핀 (기본 GPIO 25)")
     g.add_argument("--lcd-rst", type=int, default=27, help="RST 핀 (기본 GPIO 27, 없으면 -1)")
     g.add_argument("--lcd-bl", type=int, default=24, help="백라이트 핀 (기본 GPIO 24, 없으면 -1)")
@@ -635,6 +670,13 @@ def main(argv=None):
     if problems and not a.quiet:
         for p in problems:
             print(f"[인트로] 건너뜀 — {p}")
+
+    if getattr(a, "lcd_test", False) and out.name == "lcd":
+        rc = lcd_test(out)
+        out.close(blank=False)
+        if cursor_off:
+            console_cursor(True)
+        return rc
 
     if a.delay > 0:
         time.sleep(a.delay)
