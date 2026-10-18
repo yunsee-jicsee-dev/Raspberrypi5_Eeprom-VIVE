@@ -133,7 +133,7 @@ def blit_rotated(dst, img, angle, pivot, pos):
 class Intro:
     """로고 인트로 한 장면. draw(surf, t) 를 매 프레임 호출."""
 
-    def __init__(self, text, w, h, k=1):
+    def __init__(self, text, w, h, k=1, model="5", title="Raspberry Pi"):
         self.T = text
         self.w, self.h, self.k = w, h, k
         # 로고가 화면 높이의 절반쯤 되도록 도트 크기를 고른다 (LCD px=2, 큰 창 px=3)
@@ -147,8 +147,10 @@ class Intro:
         self.logo = sprite_surface(LOGO, LOGO_COLORS, px)
         self.logo_mask = white_mask(self.logo)
 
-        self.title = "Raspberry Pi"
-        self.five = "5"
+        self.title = title
+        # 로고 옆 금색 글자. 파이 4 면 "4", Zero 면 "Zero" 처럼 바꿔 쓴다.
+        # (아래 five_* 는 이 금색 글자 자리를 가리키는 이름이다.)
+        self.five = str(model)
         t1 = text.render(self.title, WHITE, k, shadow=False)
         t5 = text.render(self.five, GOLD, 2 * k, shadow=False)
         self.title_h, self.five_h = t1.get_height(), t5.get_height()
@@ -372,6 +374,8 @@ def demo(argv=None):
     ap.add_argument("--scale", type=int, default=3, help="창 확대 배율 (기본 3)")
     ap.add_argument("--fps", type=int, default=FPS, help=f"프레임레이트 (기본 {FPS})")
     ap.add_argument("--once", action="store_true", help="한 번만 재생하고 끝내기")
+    ap.add_argument("--model", default="5", help="로고 옆 금색 글자 (기본 5)")
+    ap.add_argument("--title", default="Raspberry Pi", help="로고 아래 글귀")
     a = ap.parse_args(argv)
     try:
         w, h = (int(v) for v in a.size.lower().split("x"))
@@ -389,7 +393,7 @@ def demo(argv=None):
     pygame.display.set_caption("Raspberry Pi 5 인트로")
     print("아무 키나 누르면 끝납니다.")
 
-    it = Intro(load_text(), w, h, 2 if w >= 320 else 1)
+    it = Intro(load_text(), w, h, 2 if w >= 320 else 1, a.model, a.title)
     canvas = pygame.Surface((w, h))
     clock = pygame.time.Clock()
     t, frames, t0, running = 0.0, 0, time.perf_counter(), True

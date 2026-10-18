@@ -406,7 +406,7 @@ def make_scene(name, canvas_size, k, a):
         if a.kmsg and not unlock.to_kmsg(a.items, a.user):
             print("[인트로] /dev/kmsg 에 못 썼어요 (root 여야 합니다)", file=sys.stderr)
         return sc
-    return intro.Intro(intro.load_text(), cw, ch, k)
+    return intro.Intro(intro.load_text(), cw, ch, k, a.model, a.title)
 
 
 def play(out, canvas_size, k, fps, loop=False, scenes=()):
@@ -469,6 +469,9 @@ def build_parser():
     p.add_argument("--items", nargs="*", metavar="이름",
                    help="--scene unlock 에서 얻을 것들 (기본: python chromium firefox '설정 권한')")
     p.add_argument("--user", help="--scene unlock 에 쓸 사용자 이름 (기본: 자동)")
+    p.add_argument("--model", default="5", metavar="글자",
+                   help="로고 옆 금색 글자 (기본 5). 파이 4 면 --model 4")
+    p.add_argument("--title", default="Raspberry Pi", help="로고 아래 글귀 (기본 Raspberry Pi)")
     p.add_argument("--kmsg", action="store_true",
                    help="--scene unlock 의 글귀를 진짜 커널 로그(dmesg) 에도 남긴다 (root 필요)")
     p.add_argument("--display", choices=("auto", "kms", "fb", "sdl", "lcd", "frames"),

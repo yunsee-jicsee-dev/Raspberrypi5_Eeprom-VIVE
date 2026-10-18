@@ -179,6 +179,7 @@ LCD 서비스(`--lcd`) 는 **`Before=` 가 하나도 없다.** 아무도 기다�
 python3 intro.py                            # 창에서 반복 재생
 python3 unlock.py                           # "획득!" 화면 미리보기
 python3 intro.py --size 160x128             # LCD 크기로
+python3 intro.py --model 4                  # 금색 글자를 4 로 (파이 4)
 python3 play.py --display sdl --fullscreen  # 전체화면
 sudo python3 play.py --display kms          # 콘솔에서 화면을 직접 잡아서
 sudo python3 play.py --display lcd          # ST7735 SPI LCD 에
@@ -186,7 +187,8 @@ python3 play.py --save-frames out/          # PNG 로 떨구기
 python3 boot/make-theme.py --fps 25 --zoom 3   # 테마만 구워 보기
 ```
 
-`play.py` 주요 옵션: `--scene`(intro/unlock, 여러 개 가능), `--items`, `--user`,
+`play.py` 주요 옵션: `--scene`(intro/unlock, 여러 개 가능), `--model`(로고 옆
+금색 글자, 기본 5), `--title`, `--items`, `--user`,
 `--kmsg`, `--fps`, `--size`(인트로 원본, 기본 400x240),
 `--max-scale`, `--delay`, `--max-seconds`(안전장치), `--loop`.
 
@@ -248,6 +250,9 @@ systemd.mask=rpi5-bootintro.service
 ## 메모
 
 - 인트로 전체 길이는 3.7초(`intro.LENGTH`). 타임라인 상수는 `intro.py` 위쪽에 있다.
+- 로고 옆 금색 글자는 `--model` 로 바꾼다 (`4`, `400`, `Zero` ...). 글자 수가
+  달라져도 가로 가운데 정렬은 알아서 맞춰진다. plymouth 테마를 구울 때도
+  `boot/make-theme.py --model 4` 로 같이 넘긴다.
 - 화면 가운데에 정수 배율로만 확대한다. 400x240 원본이 1920x1080 에서는
   4배(1600x960), 나머지는 검은 여백이 된다.
 - `intro.py` 는 폰트를 `main.py` 에서 먼저 찾고(`intro.load_text()`), 없으면

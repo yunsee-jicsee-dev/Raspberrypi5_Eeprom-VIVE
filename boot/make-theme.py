@@ -100,10 +100,10 @@ ScriptFile={theme_dir}/{name}.script
 '''
 
 
-def build(outdir, fps, zoom, canvas, theme_dir):
+def build(outdir, fps, zoom, canvas, theme_dir, model="5", title="Raspberry Pi"):
     cw, ch = canvas
     k = 2 if cw >= 320 else 1
-    it = intro.Intro(intro.load_text(), cw, ch, k)
+    it = intro.Intro(intro.load_text(), cw, ch, k, model, title)
     canvas_surf = pygame.Surface((cw, ch))
     big = pygame.Surface((cw * zoom, ch * zoom))
 
@@ -140,6 +140,8 @@ def main(argv=None):
                         "50 의 약수(50/25/10/5)여야 정확하다")
     p.add_argument("--zoom", type=int, default=2, help="정수 확대 배율 (기본 2)")
     p.add_argument("--size", default="400x240", help="원본 크기 (기본 400x240)")
+    p.add_argument("--model", default="5", help="로고 옆 금색 글자 (기본 5)")
+    p.add_argument("--title", default="Raspberry Pi", help="로고 아래 글귀")
     p.add_argument("--theme-dir", default=THEME_DIR,
                    help=f"설치될 경로 (.plymouth 에 적힌다, 기본 {THEME_DIR})")
     a = p.parse_args(argv)
@@ -155,7 +157,8 @@ def main(argv=None):
               f"로 어긋납니다.", file=sys.stderr)
 
     outdir = os.path.join(a.out, THEME_NAME)
-    count, (w, h) = build(outdir, a.fps, max(1, a.zoom), (cw, ch), a.theme_dir)
+    count, (w, h) = build(outdir, a.fps, max(1, a.zoom), (cw, ch), a.theme_dir,
+                          a.model, a.title)
     mb = count * w * h * 4 / 1024 / 1024
     total = sum(os.path.getsize(os.path.join(outdir, f)) for f in os.listdir(outdir))
     print(f"{outdir}/ 에 만들었습니다")

@@ -4,6 +4,7 @@
 #   sudo ./install.sh              설치 (로그인할 때 화면에)
 #   sudo ./install.sh --lcd        위에 더해, 부팅할 때 ST7735 SPI LCD 에도
 #   sudo ./install.sh --unlock     인트로 뒤에 "획득!" 화면도 이어서
+#   sudo ./install.sh --model 4    로고 옆 금색 글자 바꾸기 (기본 5)
 #   sudo ./install.sh --uninstall  제거
 #
 # 옵션은 같이 쓸 수 있다:  sudo ./install.sh --lcd --unlock
@@ -44,19 +45,27 @@ clean() {
 
 WITH_LCD=0
 WITH_UNLOCK=0
+MODEL=5
 MODE=install
-for arg in "$@"; do
-    case "$arg" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --lcd)        WITH_LCD=1 ;;
         --unlock)     WITH_UNLOCK=1 ;;
         --uninstall)  MODE=uninstall ;;
-        *)            die "모르는 옵션: $arg" ;;
+        --model)      shift; [[ $# -gt 0 ]] || die "--model 뒤에 글자를 적어 주세요"
+                      MODEL="$1" ;;
+        --model=*)    MODEL="${1#*=}" ;;
+        *)            die "모르는 옵션: $1" ;;
     esac
+    shift
 done
 
 # 재생할 장면. --unlock 이면 인트로 뒤에 "획득!" 화면을 이어 붙인다.
 SCENES="intro"
 [[ $WITH_UNLOCK == 1 ]] && SCENES="intro unlock"
+
+EXTRA=""
+[[ $MODEL != "5" ]] && EXTRA=" --model $MODEL"
 
 TARGET_USER="${SUDO_USER:-}"
 [[ -n "$TARGET_USER" && "$TARGET_USER" != "root" ]] || TARGET_USER="$(logname 2>/dev/null || true)"
@@ -86,7 +95,7 @@ done
 [[ -f "$SRC_DIR/main.py" ]] && install -m 644 "$SRC_DIR/main.py" "$PREFIX/main.py"
 
 install -d -o "$TARGET_USER" -g "$TARGET_USER" "$AUTOSTART"
-sed "s|--display sdl|--scene $SCENES --display sdl|" \
+sed "s|--display sdl|--scene $SCENES$EXTRA --display sdl|" \
     "$SRC_DIR/desktop/$ENTRY" > "$AUTOSTART/$ENTRY"
 chown "$TARGET_USER:$TARGET_USER" "$AUTOSTART/$ENTRY"
 chmod 644 "$AUTOSTART/$ENTRY"
@@ -98,7 +107,7 @@ if [[ $WITH_LCD == 1 ]]; then
     done
     [[ -e /dev/spidev0.0 ]] \
         || echo "경고: /dev/spidev0.0 이 없습니다. SPI 를 켜세요:  sudo raspi-config nonint do_spi 0"
-    sed "s|--display lcd|--scene $SCENES --display lcd|" \
+    sed "s|--display lcd|--scene $SCENES$EXTRA --display lcd|" \
         "$SRC_DIR/systemd/$LCD_UNIT" > "/etc/systemd/system/$LCD_UNIT"
     chmod 644 "/etc/systemd/system/$LCD_UNIT"
     systemctl daemon-reload
@@ -116,13 +125,13 @@ fi
 
 cat <<TIP
 
-설치 완료 — $TARGET_USER 로 로그인할 때 재생됩니다 (장면: $SCENES).
+설치 완료 — $TARGET_USER 로 로그인할 때 재생됩니다 (장면: $SCENES, 모델: $MODEL).
     $AUTOSTART/$ENTRY
 
 로그아웃 후 다시 로그인하면 바로 보입니다 (재부팅 안 해도 됩니다).
 
 지금 바로 보려면 (sudo 없이, 데스크톱에서):
-    python3 $PREFIX/play.py --scene $SCENES --display sdl --fullscreen
+    python3 $PREFIX/play.py --scene $SCENES$EXTRA --display sdl --fullscreen
 
 제거:  sudo ./install.sh --uninstall
 TIP
