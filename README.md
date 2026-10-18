@@ -59,6 +59,60 @@ sudo boot/preview.sh        # 콘솔(Ctrl+Alt+F2) 에서
 
 제거: `sudo boot/install.sh --uninstall`
 
+### "획득!" 화면
+
+로그인하면 커널 로그처럼 생긴 화면이 올라오면서 뭘 얻었는지 알려 준다.
+
+```
+[    0.400000] systemd[1]: Reached target graphical.target
+[    0.770000] login: jicsee logged in on wayland
+[    1.140000] 권한 목록 확인 중 ...
+────────────────────────────
+★ 당신은 sudo 권한을 얻었다!
+★ python을(를) 얻었다!
+★ chromium을(를) 얻었다!
+★ firefox을(를) 얻었다!
+★ 설정 권한을 얻었다!
+★ ... 등등을 얻었다!
+```
+
+```bash
+python3 unlock.py                                  # 창에서 미리보기
+python3 play.py --scene unlock --display sdl       # 재생기로
+python3 play.py --scene intro unlock               # 인트로 뒤에 이어서
+sudo ./install.sh --unlock                         # 로그인할 때 둘 다
+```
+
+얻는 것 목록은 바꿀 수 있다:
+
+```bash
+python3 play.py --scene unlock --items python vim docker "관리자 권한"
+```
+
+`을/를` 은 받침을 보고 고른다. 한글이 아니면 판단할 수 없으니 `을(를)` 로 적는다.
+
+**진짜 커널 로그에도** 남기려면 (`dmesg` 에 보인다, root 필요):
+
+```bash
+sudo python3 play.py --scene unlock --kmsg
+```
+
+```
+[  659.990311] rpi5-intro: YOU OBTAINED: sudo
+[  659.991763] rpi5-intro: YOU OBTAINED: python
+```
+
+커널 기록은 ASCII 밖의 바이트를 `\xNN` 으로 바꿔 저장하므로 한글은 `dmesg` 에서
+읽을 수 없다. 그래서 커널 로그에는 영문판을 쓴다.
+
+**한글 폰트**: `pixelfont` 은 ASCII 전용이라 시스템에서 한글 폰트(나눔/Noto CJK
+등) 를 찾아 쓴다. 쓸 만한 게 없으면 영문 글귀로 바꾼다 — 네모(□) 가 늘어서는
+것보다 낫다. 폰트가 한글을 진짜로 그리는지는 **서로 다른 한글이 전부 같은
+그림으로 나오는지** 보고 판단한다 (토푸는 다 같은 네모다).
+
+좁은 화면(LCD 등) 에서는 시각 표시와 긴 커널 줄을 빼고 짧게 간다. 160픽셀에
+`systemd[1]: Reached target graphical.target` 은 들어가지 않는다.
+
 ### ST7735 SPI LCD
 
 HDMI 와 별개로, SPI LCD 에도 같은 인트로를 띄울 수 있다.
@@ -105,7 +159,8 @@ LCD 서비스(`--lcd`) 는 **`Before=` 가 하나도 없다.** 아무도 기다�
 | --- | --- |
 | `intro.py` | 인트로 연출 (`Intro.draw(surf, t)`). 혼자 실행하면 창에서 미리보기 |
 | `pixelfont.py` | 5x7 비트맵 폰트. ttf 없이 글자를 그린다 |
-| `play.py` | 재생기. 화면에 인트로를 튼다. 하는 일은 그게 전부 |
+| `play.py` | 재생기. 장면을 화면에 튼다 (`--scene intro unlock` 처럼 이어 붙일 수 있다) |
+| `unlock.py` | "획득!" 장면 + 커널 로그 쓰기 |
 | `lcd.py` | ST7735/ST7735S SPI LCD 드라이버 (필요한 만큼만) |
 | `install.sh` | 로그인할 때 재생되게 설치/제거 |
 | `scripts/check.sh` | 설치 전 확인 사다리 |
@@ -119,6 +174,7 @@ LCD 서비스(`--lcd`) 는 **`Before=` 가 하나도 없다.** 아무도 기다�
 
 ```bash
 python3 intro.py                            # 창에서 반복 재생
+python3 unlock.py                           # "획득!" 화면 미리보기
 python3 intro.py --size 160x128             # LCD 크기로
 python3 play.py --display sdl --fullscreen  # 전체화면
 sudo python3 play.py --display kms          # 콘솔에서 화면을 직접 잡아서
@@ -127,7 +183,8 @@ python3 play.py --save-frames out/          # PNG 로 떨구기
 python3 boot/make-theme.py --fps 25 --zoom 3   # 테마만 구워 보기
 ```
 
-`play.py` 주요 옵션: `--fps`, `--size`(인트로 원본, 기본 400x240),
+`play.py` 주요 옵션: `--scene`(intro/unlock, 여러 개 가능), `--items`, `--user`,
+`--kmsg`, `--fps`, `--size`(인트로 원본, 기본 400x240),
 `--max-scale`, `--delay`, `--max-seconds`(안전장치), `--loop`.
 
 ## 라즈베리파이에서 겪은 것들
@@ -164,6 +221,11 @@ python3 boot/make-theme.py --fps 25 --zoom 3   # 테마만 구워 보기
   화면에 안 올라갈 수 있다. 그래서 `--display auto` 는 KMS 를 먼저 시도한다.
 - **파이 5 에서 RPi.GPIO 는 동작하지 않는다.** `lcd.py` 는 gpiozero(백엔드
   lgpio) 를 쓰고, 없으면 lgpio 를 직접 쓴다.
+- **`/dev/kmsg` 는 `write()` 한 번이 기록 한 줄이다.** 버퍼에 모았다가 한꺼번에
+  쓰면 통째로 한 기록이 되어 `dmesg` 에서 이어 붙은 꼴이 되고, 둘째 줄부터의
+  `<6>` 접두어가 글자 그대로 남는다. 줄마다 따로, 버퍼 없이 써야 한다.
+- **커널 로그는 ASCII 밖의 바이트를 `\xNN` 으로 바꿔 저장한다.** 한글을 넣으면
+  `dmesg` 에서 읽을 수 없다.
 - **ST7735 는 RGB565 를 빅엔디안으로 받는다.** pygame 의 16비트 Surface 는
   호스트 순서(ARM = 리틀엔디안) 라서 바이트를 뒤집어야 한다. `array.byteswap()`
   이 C 로 돌아서 프레임마다 돌려도 부담이 없다.

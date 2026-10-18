@@ -396,26 +396,41 @@ def wait_for_fb(path, seconds):
 
 
 # -------------------------------------------------------------------- 재생 --
-def play(out, canvas_size, k, fps, loop=False, length=intro.LENGTH):
+def make_scene(name, canvas_size, k, a):
+    """그릴 장면 하나. draw(surf, t) 와 LENGTH 만 있으면 된다."""
     cw, ch = canvas_size
-    it = intro.Intro(intro.load_text(), cw, ch, k)
-    canvas = pygame.Surface((cw, ch))
+    if name == "unlock":
+        import unlock
+        sc = unlock.Unlock(intro.load_text(), cw, ch, k,
+                           items=a.items, user=a.user)
+        if a.kmsg and not unlock.to_kmsg(a.items, a.user):
+            print("[인트로] /dev/kmsg 에 못 썼어요 (root 여야 합니다)", file=sys.stderr)
+        return sc
+    return intro.Intro(intro.load_text(), cw, ch, k)
+
+
+def play(out, canvas_size, k, fps, loop=False, scenes=()):
+    """장면들을 차례로 재생한다. 창은 하나만 쓰므로 사이에 깜빡임이 없다."""
+    canvas = pygame.Surface(canvas_size)
     frame = 1.0 / max(1, fps)
-    t0 = time.monotonic()
     frames = 0
+    started = time.monotonic()
     while True:
-        t = time.monotonic() - t0
-        if t >= length:
-            if not loop:
-                return frames, t
-            t0, frames = time.monotonic(), 0
-            continue
-        it.draw(canvas, t)
-        out.show(canvas)
-        frames += 1
-        rest = frame - (time.monotonic() - t0 - t)
-        if rest > 0:
-            time.sleep(rest)
+        for sc in scenes:
+            length = getattr(sc, "LENGTH", intro.LENGTH)
+            t0 = time.monotonic()
+            while True:
+                t = time.monotonic() - t0
+                if t >= length:
+                    break
+                sc.draw(canvas, t)
+                out.show(canvas)
+                frames += 1
+                rest = frame - (time.monotonic() - t0 - t)
+                if rest > 0:
+                    time.sleep(rest)
+        if not loop:
+            return frames, time.monotonic() - started
 
 
 def parse_geometry(txt):
@@ -447,6 +462,15 @@ def parse_pair(txt):
 
 def build_parser():
     p = argparse.ArgumentParser(description="부팅 때 라즈베리파이 5 인트로 재생")
+    p.add_argument("--scene", nargs="+", choices=("intro", "unlock"), default=["intro"],
+                   metavar="이름",
+                   help="재생할 장면. intro(기본) 또는 unlock(로그인 '획득!' 화면). "
+                        "여러 개를 적으면 차례로 이어서 재생한다: --scene intro unlock")
+    p.add_argument("--items", nargs="*", metavar="이름",
+                   help="--scene unlock 에서 얻을 것들 (기본: python chromium firefox '설정 권한')")
+    p.add_argument("--user", help="--scene unlock 에 쓸 사용자 이름 (기본: 자동)")
+    p.add_argument("--kmsg", action="store_true",
+                   help="--scene unlock 의 글귀를 진짜 커널 로그(dmesg) 에도 남긴다 (root 필요)")
     p.add_argument("--display", choices=("auto", "kms", "fb", "sdl", "lcd", "frames"),
                    default="auto",
                    help="auto: 데스크톱이면 전체화면 창, 아니면 kms → fb 순서 (기본). "
@@ -614,7 +638,8 @@ def main(argv=None):
 
     t0 = time.monotonic()
     try:
-        frames, played = play(out, (cw, ch), k, a.fps, a.loop)
+        frames, played = play(out, (cw, ch), k, a.fps, a.loop,
+                              [make_scene(n, (cw, ch), k, a) for n in a.scene])
     except KeyboardInterrupt:
         frames, played = 0, time.monotonic() - t0
     finally:
